@@ -1,20 +1,51 @@
-# deps / build
-node_modules/
-.next/
-dist/
-coverage/
-*.log
-.DS_Store
 
-# secrets
+/build
+BUILD.md
+/coverage
+coverage/
+# debug
+# dependencies
+# deps / build
+dist/
+.DS_Store
 .env
+.env*
 .env.*
 !.env.example
-
+# env files (can opt-in for committing if needed)
 # local planning + copied vendor docs (not part of the product)
-research/
-STRATEGY.md
-RESOURCES.md
-BUILD.md
-PAYPAL-PRIMER.md
+*.log
+# misc
+.next/
+/.next/
+next-env.d.ts
+# next.js
+/node_modules
+node_modules/
+npm-debug.log*
+/out/
 OUTREACH.md
+.paypal-order-smoke.txt
+PAYPAL-PRIMER.md
+*.pem
+.pnp.*
+/.pnp
+.pnpm-debug.log*
+# production
+research/
+RESOURCES.md
+# secrets
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+STRATEGY.md
+# testing
+*.tsbuildinfo
+# typescript
+# vercel
+.vercel
+.yarn/*
+yarn-debug.log*
+yarn-error.log*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions

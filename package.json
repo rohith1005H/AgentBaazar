@@ -1,0 +1,62 @@
+{
+  "name": "agentbaazar",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "seed": "tsx scripts/seed.ts",
+    "import-feed": "tsx scripts/import-feed.ts",
+    "register-webhook": "tsx scripts/register-webhook.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "keygen": "tsx scripts/keygen.ts",
+    "paypal:token": "tsx scripts/paypal-token.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "4.0.87",
+    "@ai-sdk/groq": "4.0.54",
+    "@ai-sdk/mcp": "2.0.66",
+    "@ai-sdk/react": "4.0.130",
+    "@channel3/sdk": "4.1.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@neondatabase/serverless": "1.2.0",
+    "@paypal/paypal-server-sdk": "2.5.0",
+    "@paypal/react-paypal-js": "10.5.2",
+    "ag-studio-react": "3.0.0",
+    "ai": "7.0.127",
+    "drizzle-orm": "0.45.3",
+    "jose": "6.2.12",
+    "mcp-handler": "2.2.0",
+    "next": "16.3.8",
+    "pino": "10.3.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "ulid": "3.0.2",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "drizzle-kit": "0.31.11",
+    "tailwindcss": "^4",
+    "tsx": "4.23.15",
+    "typescript": "^5",
+    "vitest": "5.0.3"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  }
+}
