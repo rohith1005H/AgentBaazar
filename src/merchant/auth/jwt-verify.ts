@@ -21,6 +21,7 @@ type Verifier = ReturnType<typeof createRemoteJWKSet> | ReturnType<typeof create
 let cached: { url: string; verifier: Verifier } | undefined;
 
 function verifier(): Verifier {
+	if (cached?.url === "local") return cached.verifier;
 	const url = process.env.AGENTIC_JWKS_URL;
 	if (!url) throw new AuthError("AGENTIC_JWKS_URL is not configured", 500);
 	if (!cached || cached.url !== url) {
