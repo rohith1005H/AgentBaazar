@@ -68,7 +68,12 @@ export const products = merchant.table(
 		url: text(),
 		imageUrl: text("image_url"),
 		attributes: jsonb().$type<Record<string, unknown>>(),
-		flags: jsonb().$type<{ fragile?: boolean; requiresFields?: string[] }>(),
+		flags: jsonb().$type<{
+			fragile?: boolean;
+			requiresFields?: string[];
+			eligibleSearch?: boolean;
+			eligibleCheckout?: boolean;
+		}>(),
 		createdAt: ts("created_at").notNull().defaultNow(),
 	},
 	(t) => [index("products_merchant_idx").on(t.merchantId)],
@@ -83,6 +88,8 @@ export const variants = merchant.table(
 			.references(() => products.id),
 		sku: text(),
 		title: text().notNull(),
+		url: text(),
+		imageUrl: text("image_url"),
 		priceCents: integer("price_cents").notNull(),
 		salePriceCents: integer("sale_price_cents"),
 		currency: text().notNull().default("USD"),
@@ -120,9 +127,15 @@ export const carts = merchant.table(
 			.references(() => merchants.id),
 		status: text().notNull(),
 		validationStatus: text("validation_status").notNull(),
+		/** Optimistic concurrency: every write bumps it, writes check the value they read */
+		version: integer().notNull().default(0),
+		/** Last cart request accepted (PUT is full replacement), re-evaluated at checkout */
+		request: jsonb().$type<Record<string, unknown>>().notNull(),
 		/** Last full PayPalCart we returned */
 		payload: jsonb().$type<Record<string, unknown>>().notNull(),
 		paypalOrderId: text("paypal_order_id"),
+		/** Amount of the PayPal order as last created/patched, to know whether it is in sync */
+		paypalAmountCents: integer("paypal_amount_cents"),
 		approvalUrl: text("approval_url"),
 		payerId: text("payer_id"),
 		jwtSub: text("jwt_sub"),
@@ -158,7 +171,10 @@ export const orders = merchant.table(
 		paypalOrderId: text("paypal_order_id").notNull(),
 		authorizationId: text("authorization_id"),
 		captureId: text("capture_id"),
-		status: text().notNull(), // AUTHORIZED | CAPTURED | VOIDED | REFUNDED | PARTIALLY_REFUNDED | DISPUTED | CAPTURE_FAILED
+		// PENDING (stock reserved, payment in flight) | AUTHORIZED | CAPTURED | VOIDED | REFUNDED
+		// | PARTIALLY_REFUNDED | DISPUTED | FAILED
+		status: text().notNull(),
+		totalCents: integer("total_cents").notNull(),
 		totals: jsonb().$type<Record<string, unknown>>().notNull(),
 		buyer: jsonb().$type<Record<string, unknown>>(),
 		shipTo: jsonb("ship_to").$type<Record<string, unknown>>(),
@@ -170,6 +186,9 @@ export const orders = merchant.table(
 	(t) => [index("orders_merchant_idx").on(t.merchantId), uniqueIndex("orders_paypal_order_idx").on(t.paypalOrderId)],
 );
 
+/** Human-friendly merchant order numbers: AB-1001, AB-1002, ... */
+export const orderNumberSeq = merchant.sequence("order_number_seq", { startWith: 1001 });
+
 export const orderItems = merchant.table("order_items", {
 	id: text().primaryKey(),
 	orderId: text("order_id")
@@ -179,6 +198,8 @@ export const orderItems = merchant.table("order_items", {
 	qty: integer().notNull(),
 	unitCents: integer("unit_cents").notNull(),
 	title: text().notNull(),
+	/** True when checkout drew this line from on-hand stock (not a back-/pre-order), so a void puts it back */
+	stockReserved: boolean("stock_reserved").notNull().default(true),
 });
 
 export const shipments = merchant.table("shipments", {

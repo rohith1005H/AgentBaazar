@@ -1,0 +1,55 @@
+{
+  "id": "kaveri-coffee",
+  "name": "Kaveri Coffee Co.",
+  "feed": "kaveri-coffee.tsv",
+  "paymentMode": "authorize",
+  "policy": {
+    "currency": "USD",
+    "shippingOptions": [
+      {
+        "id": "STANDARD",
+        "name": "Standard (4 days)",
+        "baseCents": 499,
+        "perKgCents": 150,
+        "etaDays": 4,
+        "regions": [
+          "*"
+        ]
+      },
+      {
+        "id": "PRIORITY",
+        "name": "Priority (2 days)",
+        "baseCents": 1199,
+        "perKgCents": 250,
+        "etaDays": 2,
+        "regions": [
+          "*"
+        ]
+      }
+    ],
+    "taxRates": {
+      "TX": 0.0825,
+      "CA": 0.0725,
+      "NY": 0.08875,
+      "WA": 0.1025,
+      "IL": 0.1025,
+      "FL": 0.07,
+      "*": 0.06
+    },
+    "regionsServed": [
+      "*"
+    ],
+    "poBoxAllowedForFragile": true,
+    "coupons": {
+      "firstOrderPct": 15,
+      "bundle": {
+        "minItems": 3,
+        "pct": 10
+      },
+      "maxTotalPct": 20,
+      "minSubtotalCents": 2000,
+      "freeShippingOverCents": 6000,
+      "expiresMinutes": 30
+    }
+  }
+}

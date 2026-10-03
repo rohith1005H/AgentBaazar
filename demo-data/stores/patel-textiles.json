@@ -1,0 +1,55 @@
+{
+  "id": "patel-textiles",
+  "name": "Patel Textiles",
+  "feed": "patel-textiles.csv",
+  "paymentMode": "authorize",
+  "policy": {
+    "currency": "USD",
+    "shippingOptions": [
+      {
+        "id": "STANDARD",
+        "name": "Standard (5-7 days)",
+        "baseCents": 599,
+        "perKgCents": 100,
+        "etaDays": 6,
+        "regions": [
+          "*"
+        ]
+      },
+      {
+        "id": "EXPRESS",
+        "name": "Express (2 days)",
+        "baseCents": 1499,
+        "perKgCents": 200,
+        "etaDays": 2,
+        "regions": [
+          "*"
+        ]
+      }
+    ],
+    "taxRates": {
+      "TX": 0.0825,
+      "CA": 0.0725,
+      "NY": 0.08875,
+      "WA": 0.1025,
+      "IL": 0.1025,
+      "FL": 0.07,
+      "*": 0.06
+    },
+    "regionsServed": [
+      "*"
+    ],
+    "poBoxAllowedForFragile": true,
+    "coupons": {
+      "firstOrderPct": 10,
+      "bundle": {
+        "minItems": 2,
+        "pct": 5
+      },
+      "maxTotalPct": 15,
+      "minSubtotalCents": 2500,
+      "freeShippingOverCents": 10000,
+      "expiresMinutes": 30
+    }
+  }
+}

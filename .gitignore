@@ -50,3 +50,6 @@ yarn-error.log*
 !.yarn/releases
 !.yarn/versions
 .neon
+
+# local tool output
+.playwright-mcp/

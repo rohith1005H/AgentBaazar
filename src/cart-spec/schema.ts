@@ -33,9 +33,9 @@ export type Address = z.infer<typeof Address>;
 
 export const Customer = z.object({
 	name: z.object({ given_name: z.string().optional(), surname: z.string().optional() }).optional(),
+	/** E.164 split form, as in the spec's examples: { country_code: "1", national_number: "5551234567" } */
 	phone: z
-		.object({ phone_number: z.object({ national_number: z.string() }).optional() })
-		.passthrough()
+		.object({ country_code: z.string().regex(/^[0-9]{1,3}$/), national_number: z.string().regex(/^[0-9]{1,14}$/) })
 		.optional(),
 	email_address: z.string().email().optional(),
 });
@@ -161,9 +161,13 @@ export const CartItem = z.object({
 	description: z.string().optional(),
 	item_url: z.string().url().optional(),
 	price: Money.optional(),
-	selected_attributes: z.array(z.record(z.string(), z.unknown())).optional(),
+	/** e.g. [{ name: "Color", value: "Blue" }] */
+	selected_attributes: z.array(z.object({ name: z.string(), value: z.string() })).optional(),
 	gift_options: GiftOptions.optional(),
-	custom_options: z.array(z.record(z.string(), z.unknown())).optional(),
+	/** e.g. [{ name: "Engraving", value: "Happy Birthday!", price_modifier: "5.00" }] */
+	custom_options: z
+		.array(z.object({ name: z.string(), value: z.string().optional(), price_modifier: z.string().optional() }))
+		.optional(),
 });
 export type CartItem = z.infer<typeof CartItem>;
 
@@ -215,6 +219,7 @@ export const AppliedCoupon = z.object({
 	description: z.string().optional(),
 	discount_amount: Money.optional(),
 });
+export type AppliedCoupon = z.infer<typeof AppliedCoupon>;
 
 export const CheckoutField = z.object({
 	type: CheckoutFieldType,
@@ -271,8 +276,13 @@ export const CartRequest = PayPalCart.pick({
 });
 export type CartRequest = z.infer<typeof CartRequest>;
 
-/** What a caller sends to POST /merchant-cart/{id}/checkout. */
-export const CheckoutRequest = z.object({
+/**
+ * What a caller sends to POST /merchant-cart/{id}/checkout: the cart as the
+ * caller last saw it, with `payment_method.token` and `payer_id` set after the
+ * buyer approved in PayPal. The merchant ignores everything except
+ * payment_method and re-validates against its own stored cart.
+ */
+export const CheckoutRequest = PayPalCart.extend({
 	payment_method: PaymentMethod,
 });
 export type CheckoutRequest = z.infer<typeof CheckoutRequest>;

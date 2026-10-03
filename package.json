@@ -11,15 +11,15 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:push": "drizzle-kit push",
+    "db:push": "node --env-file=.env ./node_modules/drizzle-kit/bin.cjs push",
     "db:studio": "drizzle-kit studio",
-    "seed": "tsx scripts/seed.ts",
-    "import-feed": "tsx scripts/import-feed.ts",
-    "register-webhook": "tsx scripts/register-webhook.ts",
-    "smoke": "tsx scripts/smoke.ts",
-    "keygen": "tsx scripts/keygen.ts",
-    "paypal:token": "tsx scripts/paypal-token.ts",
-    "db:check": "tsx scripts/db-check.ts"
+    "seed": "tsx --env-file=.env scripts/seed.ts",
+    "import-feed": "tsx --env-file=.env scripts/import-feed.ts",
+    "register-webhook": "tsx --env-file=.env scripts/register-webhook.ts",
+    "smoke": "tsx --env-file=.env scripts/smoke.ts",
+    "keygen": "tsx --env-file=.env scripts/keygen.ts",
+    "paypal:token": "tsx --env-file=.env scripts/paypal-token.ts",
+    "db:check": "tsx --env-file=.env scripts/db-check.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "4.0.87",
@@ -61,5 +61,6 @@
   "license": "Apache-2.0",
   "engines": {
     "node": ">=24"
-  }
+  },
+  "type": "module"
 }

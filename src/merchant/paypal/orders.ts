@@ -24,6 +24,7 @@ import {
 	PaypalWalletContextShippingPreference,
 	ShipmentCarrier,
 } from "@paypal/paypal-server-sdk";
+import type { OrderLine, OrderTotals, ShipTo } from "@/src/merchant/cart/types";
 import { type PayPalCreds, PayPalError } from "./http";
 
 // ---- client cache -------------------------------------------------------
@@ -59,36 +60,15 @@ async function run<T>(fn: () => Promise<{ result: T; statusCode: number }>): Pro
 
 // ---- money helpers ------------------------------------------------------
 
+export type { OrderLine, OrderTotals, ShipTo };
+
+/** SDK (camelCase) money. */
 export const money = (cents: number, currencyCode = "USD") => ({ currencyCode, value: (cents / 100).toFixed(2) });
+/** Wire (snake_case) money, for PATCH values the SDK passes through untouched. */
+const wireMoney = (cents: number, currency_code = "USD") => ({ currency_code, value: (cents / 100).toFixed(2) });
 
-export type OrderLine = {
-	sku: string;
-	name: string;
-	quantity: number;
-	unitCents: number;
-	url?: string;
-	description?: string;
-};
-export type OrderTotals = {
-	itemTotalCents: number;
-	shippingCents: number;
-	taxCents: number;
-	discountCents: number;
-	/** item + shipping + tax − discount; asserted here */
-	totalCents: number;
-};
-export type ShipTo = {
-	fullName?: string;
-	addressLine1?: string;
-	addressLine2?: string;
-	city?: string;
-	state?: string;
-	postalCode?: string;
-	countryCode: string;
-};
-
-function assertTotals(t: OrderTotals) {
-	const sum = t.itemTotalCents + t.shippingCents + t.taxCents - t.discountCents;
+export function assertTotals(t: OrderTotals): void {
+	const sum = t.itemTotalCents + t.shippingCents - t.shippingDiscountCents + t.taxCents - t.discountCents;
 	if (sum !== t.totalCents) throw new Error(`Totals do not add up: ${sum} != ${t.totalCents}`);
 }
 
@@ -99,8 +79,23 @@ function amountWithBreakdown(t: OrderTotals) {
 		breakdown: {
 			itemTotal: money(t.itemTotalCents),
 			shipping: money(t.shippingCents),
+			shippingDiscount: money(t.shippingDiscountCents),
 			taxTotal: money(t.taxCents),
 			discount: money(t.discountCents),
+		},
+	};
+}
+
+function wireAmount(t: OrderTotals) {
+	assertTotals(t);
+	return {
+		...wireMoney(t.totalCents),
+		breakdown: {
+			item_total: wireMoney(t.itemTotalCents),
+			shipping: wireMoney(t.shippingCents),
+			shipping_discount: wireMoney(t.shippingDiscountCents),
+			tax_total: wireMoney(t.taxCents),
+			discount: wireMoney(t.discountCents),
 		},
 	};
 }
@@ -114,6 +109,18 @@ function items(lines: OrderLine[]) {
 		unitAmount: money(l.unitCents),
 		category: ItemCategory.PhysicalGoods,
 		url: l.url,
+	}));
+}
+
+function wireItems(lines: OrderLine[]) {
+	return lines.map((l) => ({
+		name: l.name.slice(0, 127),
+		sku: l.sku.slice(0, 127),
+		...(l.description && { description: l.description.slice(0, 127) }),
+		quantity: String(l.quantity),
+		unit_amount: wireMoney(l.unitCents),
+		category: "PHYSICAL_GOODS",
+		...(l.url && { url: l.url }),
 	}));
 }
 
@@ -131,6 +138,15 @@ function shipping(s?: ShipTo) {
 		},
 	};
 }
+
+const wireAddress = (s: ShipTo) => ({
+	...(s.addressLine1 && { address_line_1: s.addressLine1 }),
+	...(s.addressLine2 && { address_line_2: s.addressLine2 }),
+	...(s.city && { admin_area_2: s.city }),
+	...(s.state && { admin_area_1: s.state }),
+	...(s.postalCode && { postal_code: s.postalCode }),
+	country_code: s.countryCode,
+});
 
 // ---- orders -------------------------------------------------------------
 
@@ -193,31 +209,21 @@ export async function getOrder(creds: PayPalCreds, id: string): Promise<Order> {
 	return run(() => sdk(creds).orders.getOrder({ id }));
 }
 
-/** Replace amount, items and shipping on a CREATED/APPROVED order (cart changed). */
+/**
+ * Replace amount, items and shipping address on a CREATED/APPROVED order after
+ * the cart changed. Patch values are sent verbatim by the SDK, so they use the
+ * wire (snake_case) shapes.
+ */
 export async function patchOrder(
 	creds: PayPalCreds,
 	id: string,
 	patch: { totals: OrderTotals; lines?: OrderLine[]; shipTo?: ShipTo },
 ): Promise<void> {
-	const ops: Patch[] = [
-		{
-			op: PatchOp.Replace,
-			path: "/purchase_units/@reference_id=='default'/amount",
-			value: amountWithBreakdown(patch.totals),
-		},
-	];
-	if (patch.lines)
-		ops.push({
-			op: PatchOp.Replace,
-			path: "/purchase_units/@reference_id=='default'/items",
-			value: items(patch.lines),
-		});
+	const unit = "/purchase_units/@reference_id=='default'";
+	const ops: Patch[] = [{ op: PatchOp.Replace, path: `${unit}/amount`, value: wireAmount(patch.totals) }];
+	if (patch.lines) ops.push({ op: PatchOp.Replace, path: `${unit}/items`, value: wireItems(patch.lines) });
 	if (patch.shipTo)
-		ops.push({
-			op: PatchOp.Replace,
-			path: "/purchase_units/@reference_id=='default'/shipping/address",
-			value: shipping(patch.shipTo)?.address,
-		});
+		ops.push({ op: PatchOp.Replace, path: `${unit}/shipping/address`, value: wireAddress(patch.shipTo) });
 	await run(() => sdk(creds).orders.patchOrder({ id, body: ops }));
 }
 
@@ -313,14 +319,14 @@ const CARRIERS: Record<string, ShipmentCarrier> = {
 	FEDEX: ShipmentCarrier.Fedex,
 };
 
-/** Post shipment tracking against a captured order (seller protection + buyer visibility). */
+/** Post shipment tracking against a captured order (seller protection + buyer visibility). Returns PayPal's tracker id. */
 export async function addTracking(
 	creds: PayPalCreds,
 	orderId: string,
 	t: { captureId: string; carrier: string; trackingNumber: string; notifyPayer?: boolean },
-): Promise<void> {
+): Promise<string | undefined> {
 	const known = CARRIERS[t.carrier.toUpperCase()];
-	await run(() =>
+	const order = await run(() =>
 		sdk(creds).orders.createOrderTracking({
 			id: orderId,
 			body: {
@@ -332,4 +338,6 @@ export async function addTracking(
 			},
 		}),
 	);
+	const trackers = order.purchaseUnits?.[0]?.shipping?.trackers ?? [];
+	return trackers.at(-1)?.id;
 }
