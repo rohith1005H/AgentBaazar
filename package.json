@@ -27,6 +27,8 @@
     "@ai-sdk/react": "4.0.130",
     "@channel3/sdk": "4.1.0",
     "@modelcontextprotocol/sdk": "1.32.0",
+    "@neon/config": "^1.8.3",
+    "@neon/env": "^1.4.8",
     "@neondatabase/serverless": "1.2.0",
     "@paypal/paypal-server-sdk": "2.5.0",
     "@paypal/react-paypal-js": "10.5.2",
