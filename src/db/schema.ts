@@ -3,7 +3,17 @@
  *   merchant.*  — the store adapter (catalog, carts, orders, PayPal state, webhooks)
  *   platform.*  — the buyer agent platform (stores registry, sessions, signing keys)
  */
-import { boolean, index, integer, jsonb, pgSchema, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+	boolean,
+	index,
+	integer,
+	jsonb,
+	pgSchema,
+	primaryKey,
+	text,
+	timestamp,
+	uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 export const merchant = pgSchema("merchant");
 export const platform = pgSchema("platform");
@@ -103,20 +113,24 @@ export const variants = merchant.table(
 	(t) => [index("variants_product_idx").on(t.productId)],
 );
 
-export const coupons = merchant.table("coupons", {
-	code: text().primaryKey(),
-	merchantId: text("merchant_id")
-		.notNull()
-		.references(() => merchants.id),
-	kind: text().notNull(), // percent | fixed | free_shipping
-	value: integer().notNull(), // percent or cents
-	minSubtotalCents: integer("min_subtotal_cents").notNull().default(0),
-	maxUses: integer("max_uses").notNull().default(1),
-	used: integer().notNull().default(0),
-	expiresAt: ts("expires_at"),
-	issuedToCartId: text("issued_to_cart_id"),
-	description: text(),
-});
+export const coupons = merchant.table(
+	"coupons",
+	{
+		code: text().notNull(),
+		merchantId: text("merchant_id")
+			.notNull()
+			.references(() => merchants.id),
+		kind: text().notNull(), // percent | fixed | free_shipping
+		value: integer().notNull(), // percent or cents
+		minSubtotalCents: integer("min_subtotal_cents").notNull().default(0),
+		maxUses: integer("max_uses").notNull().default(1),
+		used: integer().notNull().default(0),
+		expiresAt: ts("expires_at"),
+		issuedToCartId: text("issued_to_cart_id"),
+		description: text(),
+	},
+	(t) => [primaryKey({ columns: [t.merchantId, t.code] })],
+);
 
 export const carts = merchant.table(
 	"carts",
@@ -175,6 +189,8 @@ export const orders = merchant.table(
 		// | PARTIALLY_REFUNDED | DISPUTED | FAILED
 		status: text().notNull(),
 		totalCents: integer("total_cents").notNull(),
+		/** Coupons consumed by this order, so a void or decline can hand them back exactly */
+		couponCodes: text("coupon_codes").array(),
 		totals: jsonb().$type<Record<string, unknown>>().notNull(),
 		buyer: jsonb().$type<Record<string, unknown>>(),
 		shipTo: jsonb("ship_to").$type<Record<string, unknown>>(),
@@ -308,4 +324,6 @@ export const signingKeys = platform.table("signing_keys", {
 	publicJwk: jsonb("public_jwk").$type<Record<string, unknown>>().notNull(),
 	active: boolean().notNull().default(true),
 	createdAt: ts("created_at").notNull().defaultNow(),
+	/** Set when the key stops signing; its public half stays in the JWKS for 24 h after */
+	retiredAt: ts("retired_at"),
 });

@@ -2,6 +2,6 @@
 import { readJson, storeRoute } from "@/src/merchant/api/http";
 import { makeOffer } from "@/src/merchant/discovery";
 
-export const POST = storeRoute<{ store: string }>(async ({ req, params }) =>
-	makeOffer(params.store, await readJson(req)),
+export const POST = storeRoute<{ store: string }>(async ({ req, merchant, caller }) =>
+	makeOffer(merchant, await readJson(req), caller),
 );

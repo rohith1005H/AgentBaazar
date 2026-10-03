@@ -3,12 +3,13 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { CheckoutFieldType } from "@/src/cart-spec/schema";
 import { decrypt } from "@/src/crypto";
 import { db, type Tx } from "@/src/db/client";
-import { carts, coupons, merchants, orderNumberSeq, products, variants } from "@/src/db/schema";
+import { carts, coupons, merchants, orderNumberSeq, orders, products, variants } from "@/src/db/schema";
 import { envCreds, type PayPalCreds } from "@/src/merchant/paypal/http";
 import type { Availability, CatalogVariant, CouponRow } from "./types";
 
 export type Merchant = typeof merchants.$inferSelect;
 export type CartRow = typeof carts.$inferSelect;
+export type OrderRow = typeof orders.$inferSelect;
 
 export async function getMerchant(id: string): Promise<Merchant | undefined> {
 	const [m] = await db().select().from(merchants).where(eq(merchants.id, id));
@@ -145,4 +146,9 @@ export async function releaseCoupon(tx: Tx, merchantId: string, code: string): P
 		.update(coupons)
 		.set({ used: sql`greatest(${coupons.used} - 1, 0)` })
 		.where(and(eq(coupons.merchantId, merchantId), eq(coupons.code, code)));
+}
+
+export async function orderForPayPalOrder(paypalOrderId: string): Promise<OrderRow | undefined> {
+	const [o] = await db().select().from(orders).where(eq(orders.paypalOrderId, paypalOrderId));
+	return o;
 }

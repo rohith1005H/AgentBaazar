@@ -1,0 +1,148 @@
+/**
+ * In-memory stand-in for src/merchant/paypal/orders.ts with the PayPal semantics
+ * the cart service relies on: approval, PATCH, idempotent request ids, authorize /
+ * capture results with their own status and amount, void, refund. Tests steer
+ * failures through `fake.next`.
+ */
+
+import { PayPalError } from "@/src/merchant/paypal/http";
+import type { CreatedOrder, CreateOrderInput } from "@/src/merchant/paypal/orders";
+
+type FakeOrder = {
+	id: string;
+	status: "PAYER_ACTION_REQUIRED" | "APPROVED" | "COMPLETED";
+	amountCents: number;
+	payerId?: string;
+	authorizationId?: string;
+	captureId?: string;
+};
+
+type ChargeBehaviour =
+	| { kind: "decline"; issue: string }
+	| { kind: "status"; status: string }
+	| { kind: "amount"; amountCents: number }
+	/** PayPal performs the charge but the response is lost (timeout) */
+	| { kind: "lost-response" }
+	/** Run something (e.g. a concurrent cart update) while PayPal is processing */
+	| { kind: "during"; fn: () => Promise<void> };
+
+const money = (cents: number) => ({ currencyCode: "USD", value: (cents / 100).toFixed(2) });
+
+export const fake = {
+	orders: new Map<string, FakeOrder>(),
+	byRequestId: new Map<string, unknown>(),
+	voided: [] as string[],
+	refunded: [] as { captureId: string; amountCents?: number }[],
+	charges: 0,
+	next: { charge: undefined as ChargeBehaviour | undefined, getOrder: undefined as (() => Promise<void>) | undefined },
+	seq: 0,
+	reset() {
+		this.orders.clear();
+		this.byRequestId.clear();
+		this.voided = [];
+		this.refunded = [];
+		this.charges = 0;
+		this.next = { charge: undefined, getOrder: undefined };
+	},
+	approve(id: string, payerId = "PAYER-TEST") {
+		const o = this.orders.get(id)!;
+		o.status = "APPROVED";
+		o.payerId = payerId;
+	},
+};
+
+function idempotent<T>(requestId: string, run: () => T): T {
+	if (fake.byRequestId.has(requestId)) return fake.byRequestId.get(requestId) as T;
+	const out = run();
+	fake.byRequestId.set(requestId, out);
+	return out;
+}
+
+export async function createOrder(_c: unknown, input: CreateOrderInput): Promise<CreatedOrder> {
+	return idempotent(input.requestId, () => {
+		const id = `PP${String(++fake.seq).padStart(15, "0")}`;
+		fake.orders.set(id, { id, status: "PAYER_ACTION_REQUIRED", amountCents: input.totals.totalCents });
+		return {
+			id,
+			status: "PAYER_ACTION_REQUIRED",
+			approvalUrl: `https://www.sandbox.paypal.com/checkoutnow?token=${id}`,
+		};
+	});
+}
+
+export async function getOrder(_c: unknown, id: string) {
+	const hook = fake.next.getOrder;
+	fake.next.getOrder = undefined;
+	if (hook) await hook();
+	const o = fake.orders.get(id);
+	if (!o) throw new PayPalError(404, "RESOURCE_NOT_FOUND", "order not found");
+	return {
+		id,
+		status: o.status,
+		payer: o.payerId ? { payerId: o.payerId } : undefined,
+		purchaseUnits: [
+			{
+				amount: money(o.amountCents),
+				payments: {
+					authorizations: o.authorizationId ? [{ id: o.authorizationId, status: "CREATED" }] : [],
+					captures: o.captureId ? [{ id: o.captureId, status: "COMPLETED" }] : [],
+				},
+			},
+		],
+	};
+}
+
+export async function patchOrder(_c: unknown, id: string, patch: { totals: { totalCents: number } }) {
+	const o = fake.orders.get(id)!;
+	if (o.status === "COMPLETED")
+		throw new PayPalError(422, "UNPROCESSABLE_ENTITY", "order completed", undefined, [{ issue: "ORDER_COMPLETED" }]);
+	o.amountCents = patch.totals.totalCents;
+}
+
+async function charge(id: string, requestId: string, kind: "authorization" | "capture") {
+	const behaviour = fake.next.charge;
+	fake.next.charge = undefined;
+	if (behaviour?.kind === "during") await behaviour.fn();
+	if (fake.byRequestId.has(requestId)) return fake.byRequestId.get(requestId);
+
+	const o = fake.orders.get(id)!;
+	if (behaviour?.kind === "decline")
+		throw new PayPalError(422, "UNPROCESSABLE_ENTITY", "declined", "dbg-1", [{ issue: behaviour.issue }]);
+	if (o.status !== "APPROVED")
+		throw new PayPalError(422, "UNPROCESSABLE_ENTITY", "not approved", "dbg-2", [{ issue: "ORDER_NOT_APPROVED" }]);
+
+	fake.charges += 1;
+	o.status = "COMPLETED";
+	const chargeId = `${kind === "authorization" ? "AUTH" : "CAP"}-${fake.charges}`;
+	if (kind === "authorization") o.authorizationId = chargeId;
+	else o.captureId = chargeId;
+	const status = behaviour?.kind === "status" ? behaviour.status : kind === "authorization" ? "CREATED" : "COMPLETED";
+	const amountCents = behaviour?.kind === "amount" ? behaviour.amountCents : o.amountCents;
+	const result =
+		kind === "authorization"
+			? { authorizationId: chargeId, status, amountCents }
+			: { captureId: chargeId, status, amountCents };
+	fake.byRequestId.set(requestId, result);
+	if (behaviour?.kind === "lost-response") throw new Error("socket hang up");
+	return result;
+}
+
+export const authorizeOrder = (_c: unknown, id: string, requestId: string) => charge(id, requestId, "authorization");
+export const captureOrder = (_c: unknown, id: string, requestId: string) => charge(id, requestId, "capture");
+
+export async function voidAuthorization(_c: unknown, authorizationId: string) {
+	fake.voided.push(authorizationId);
+}
+
+export async function refundCapture(_c: unknown, captureId: string, _r: string, opts: { amountCents?: number } = {}) {
+	fake.refunded.push({ captureId, amountCents: opts.amountCents });
+	return { refundId: `REF-${fake.refunded.length}`, status: "COMPLETED" };
+}
+
+export async function captureAuthorization(_c: unknown, authorizationId: string) {
+	return { captureId: `CAP-${authorizationId}`, status: "COMPLETED", amountCents: 0 };
+}
+
+export async function addTracking() {
+	return "TRACKER-1";
+}

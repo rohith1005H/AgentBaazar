@@ -1,7 +1,7 @@
-/** GET /api/stores/{store}/orders/{orderId} — order status and tracking for the agent that placed it */
+/** GET /api/stores/{store}/orders/{orderId} — order status and tracking for the platform that placed it */
 import { storeRoute } from "@/src/merchant/api/http";
 import { orderStatus } from "@/src/merchant/fulfillment";
 
-export const GET = storeRoute<{ store: string; orderId: string }>(async ({ params }) =>
-	orderStatus(params.store, params.orderId),
+export const GET = storeRoute<{ store: string; orderId: string }>(async ({ params, merchant, caller }) =>
+	orderStatus(merchant, params.orderId, caller),
 );

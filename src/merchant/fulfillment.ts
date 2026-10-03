@@ -11,11 +11,13 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { Money } from "@/src/cart-spec/schema";
 import { db } from "@/src/db/client";
 import { orderItems, orders, refunds, shipments } from "@/src/db/schema";
 import { publish } from "@/src/events/bus";
 import { log } from "@/src/log";
 import { type ApiResult, notFound, unprocessable } from "./api/http";
+import type { CartCaller } from "./auth/jwt-verify";
 import { toCents, toMoney } from "./cart/money";
 import * as repo from "./cart/repo";
 import { PayPalError } from "./paypal/http";
@@ -23,8 +25,8 @@ import * as paypal from "./paypal/orders";
 
 type OrderRow = typeof orders.$inferSelect;
 
-async function load(store: string, orderId: string) {
-	const m = await repo.getMerchant(store);
+async function load(store: string | repo.Merchant, orderId: string) {
+	const m = typeof store === "string" ? await repo.getMerchant(store) : store;
 	if (!m) throw notFound("STORE_NOT_FOUND", `Store '${store}' does not exist`);
 	const [o] = await db()
 		.select()
@@ -35,8 +37,11 @@ async function load(store: string, orderId: string) {
 }
 
 /** What an agent may see about an order it placed. */
-export async function orderStatus(store: string, orderId: string): Promise<ApiResult> {
-	const { o } = await load(store, orderId);
+export async function orderStatus(m: repo.Merchant, orderId: string, caller: CartCaller): Promise<ApiResult> {
+	const { o } = await load(m, orderId);
+	// Only the platform that placed the order may read it.
+	if (o.agentPlatform && o.agentPlatform !== caller.payload.iss)
+		throw notFound("ORDER_NOT_FOUND", `Order '${orderId}' does not exist`);
 	const ships = await db().select().from(shipments).where(eq(shipments.orderId, o.id));
 	return {
 		status: 200,
@@ -63,14 +68,26 @@ export async function shipOrder(store: string, orderId: string, body: unknown): 
 		throw unprocessable(`Order is ${o.status}; only authorized or captured orders can ship`);
 
 	let captureId = o.captureId;
+	let status = o.status;
 	if (o.status === "AUTHORIZED") {
 		if (!o.authorizationId) throw unprocessable("Order has no authorization to capture");
 		const cap = await paypal.captureAuthorization(creds, o.authorizationId, `${o.id}-capture`, {
 			invoiceId: o.id,
 			final: true,
 		});
+		// PayPal can answer 201 with a DECLINED or PENDING capture: only COMPLETED is money in hand.
+		if (cap.status !== "COMPLETED" && cap.status !== "PENDING")
+			throw unprocessable(`PayPal capture was ${cap.status}; the order was not shipped`, [
+				{ field: "authorization", issue: "CAPTURE_DECLINED", description: `capture ${cap.captureId}` },
+			]);
+		if (cap.amountCents !== o.totalCents)
+			log.error(
+				{ order: o.id, captured: cap.amountCents, expected: o.totalCents },
+				"capture amount differs from order total",
+			);
 		captureId = cap.captureId;
-		await db().update(orders).set({ status: "CAPTURED", captureId, capturedAt: new Date() }).where(eq(orders.id, o.id));
+		status = cap.status === "COMPLETED" ? "CAPTURED" : "CAPTURE_PENDING";
+		await db().update(orders).set({ status, captureId, capturedAt: new Date() }).where(eq(orders.id, o.id));
 	}
 
 	// Tracking is best-effort: the money has moved, so a tracking failure must not undo the ship.
@@ -97,12 +114,12 @@ export async function shipOrder(store: string, orderId: string, body: unknown): 
 			paypalTrackerId: trackerId ?? null,
 		});
 
-	publish({ type: "order", store: m.id, orderId: o.id, status: "CAPTURED", totalCents: o.totalCents });
+	publish({ type: "order", store: m.id, orderId: o.id, status, totalCents: o.totalCents });
 	return {
 		status: 200,
 		body: {
 			order_id: o.id,
-			status: "CAPTURED",
+			status,
 			capture_id: captureId,
 			tracking_posted: Boolean(trackerId),
 			paypal_tracker_id: trackerId,
@@ -125,7 +142,7 @@ export async function cancelOrder(store: string, orderId: string): Promise<ApiRe
 }
 
 const RefundBody = z.object({
-	amount: z.object({ currency_code: z.literal("USD"), value: z.string() }).optional(),
+	amount: Money.extend({ currency_code: z.literal("USD") }).optional(),
 	reason: z.string().max(255).optional(),
 	/** Send the same id when retrying so PayPal does not refund twice */
 	request_id: z.string().max(100).optional(),

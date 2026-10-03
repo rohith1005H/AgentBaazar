@@ -4,8 +4,8 @@ import { getCart, updateCart } from "@/src/merchant/cart/service";
 
 type P = { store: string; cartId: string };
 
-export const GET = storeRoute<P>(async ({ params }) => getCart(params.store, params.cartId));
+export const GET = storeRoute<P>(async ({ params, merchant, caller }) => getCart(merchant, params.cartId, caller));
 
-export const PUT = storeRoute<P>(async ({ req, params }) =>
-	updateCart(params.store, params.cartId, await readJson(req)),
+export const PUT = storeRoute<P>(async ({ req, params, merchant, caller }) =>
+	updateCart(merchant, params.cartId, await readJson(req), caller),
 );

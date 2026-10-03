@@ -2,7 +2,7 @@
  * AES-256-GCM for secrets we must store (per-merchant PayPal secrets, platform
  * signing keys). Key = APP_SECRET (32 bytes, hex). Format: base64(iv|tag|ciphertext).
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 function key(): Buffer {
 	const hex = process.env.APP_SECRET;
@@ -23,4 +23,16 @@ export function decrypt(blob: string): string {
 	const d = createDecipheriv("aes-256-gcm", key(), raw.subarray(0, 12));
 	d.setAuthTag(raw.subarray(12, 28));
 	return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString("utf8");
+}
+
+/** Short HMAC for shareable links (e.g. an order review page) so ids cannot be enumerated. */
+export function signLink(value: string): string {
+	return createHmac("sha256", key()).update(value).digest("base64url").slice(0, 22);
+}
+
+export function verifyLink(value: string, sig: string | null | undefined): boolean {
+	if (!sig) return false;
+	const want = Buffer.from(signLink(value));
+	const got = Buffer.from(sig);
+	return want.length === got.length && timingSafeEqual(want, got);
 }

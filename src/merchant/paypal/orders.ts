@@ -24,6 +24,7 @@ import {
 	PaypalWalletContextShippingPreference,
 	ShipmentCarrier,
 } from "@paypal/paypal-server-sdk";
+import { toCents } from "@/src/merchant/cart/money";
 import type { OrderLine, OrderTotals, ShipTo } from "@/src/merchant/cart/types";
 import { type PayPalCreds, PayPalError } from "./http";
 
@@ -38,6 +39,19 @@ function sdk(creds: PayPalCreds) {
 			clientCredentialsAuthCredentials: { oAuthClientId: creds.clientId, oAuthClientSecret: creds.clientSecret },
 			environment: process.env.PAYPAL_ENV === "live" ? Environment.Production : Environment.Sandbox,
 			timeout: 30_000,
+			// Retry throttling and transient server errors. Safe for POSTs because every
+			// money-moving call carries a PayPal-Request-Id, so a retry returns the original result.
+			httpClientOptions: {
+				retryConfig: {
+					maxNumberOfRetries: 3,
+					retryOnTimeout: false,
+					retryInterval: 1,
+					maximumRetryWaitTime: 15,
+					backoffFactor: 2,
+					httpStatusCodesToRetry: [429, 500, 502, 503, 504],
+					httpMethodsToRetry: ["GET", "POST", "PATCH"],
+				},
+			},
 		});
 		c = { orders: new OrdersController(client), payments: new PaymentsController(client) };
 		clients.set(creds.clientId, c);
@@ -61,6 +75,9 @@ async function run<T>(fn: () => Promise<{ result: T; statusCode: number }>): Pro
 // ---- money helpers ------------------------------------------------------
 
 export type { OrderLine, OrderTotals, ShipTo };
+
+/** "12.34" -> 1234; missing -> -1 so it can never match an expected amount. */
+const cents = (v: string | undefined) => (v ? toCents(v) : -1);
 
 /** SDK (camelCase) money. */
 export const money = (cents: number, currencyCode = "USD") => ({ currencyCode, value: (cents / 100).toFixed(2) });
@@ -227,7 +244,8 @@ export async function patchOrder(
 	await run(() => sdk(creds).orders.patchOrder({ id, body: ops }));
 }
 
-export type AuthorizeResult = { authorizationId: string; status: string };
+/** `status` and `amountCents` are PayPal's answer; the caller must check both. */
+export type AuthorizeResult = { authorizationId: string; status: string; amountCents: number };
 
 /** After buyer approval, in authorize mode. */
 export async function authorizeOrder(creds: PayPalCreds, id: string, requestId: string): Promise<AuthorizeResult> {
@@ -236,10 +254,10 @@ export async function authorizeOrder(creds: PayPalCreds, id: string, requestId: 
 	);
 	const auth = res.purchaseUnits?.[0]?.payments?.authorizations?.[0];
 	if (!auth?.id) throw new PayPalError(502, "NO_AUTHORIZATION", "PayPal returned no authorization", undefined, res);
-	return { authorizationId: auth.id, status: auth.status ?? "CREATED" };
+	return { authorizationId: auth.id, status: auth.status ?? "UNKNOWN", amountCents: cents(auth.amount?.value) };
 }
 
-export type CaptureResult = { captureId: string; status: string };
+export type CaptureResult = { captureId: string; status: string; amountCents: number };
 
 /** After buyer approval, in capture mode (also used by the storefront button). */
 export async function captureOrder(creds: PayPalCreds, id: string, requestId: string): Promise<CaptureResult> {
@@ -248,7 +266,7 @@ export async function captureOrder(creds: PayPalCreds, id: string, requestId: st
 	);
 	const cap = res.purchaseUnits?.[0]?.payments?.captures?.[0];
 	if (!cap?.id) throw new PayPalError(502, "NO_CAPTURE", "PayPal returned no capture", undefined, res);
-	return { captureId: cap.id, status: cap.status ?? "COMPLETED" };
+	return { captureId: cap.id, status: cap.status ?? "UNKNOWN", amountCents: cents(cap.amount?.value) };
 }
 
 // ---- payments (authorizations / captures) --------------------------------
@@ -272,7 +290,7 @@ export async function captureAuthorization(
 			},
 		}),
 	);
-	return { captureId: cap.id!, status: cap.status ?? "COMPLETED" };
+	return { captureId: cap.id!, status: cap.status ?? "UNKNOWN", amountCents: cents(cap.amount?.value) };
 }
 
 export async function voidAuthorization(creds: PayPalCreds, authorizationId: string): Promise<void> {
@@ -285,7 +303,7 @@ export async function reauthorize(
 	requestId: string,
 ): Promise<AuthorizeResult> {
 	const a = await run(() => sdk(creds).payments.reauthorizePayment({ authorizationId, paypalRequestId: requestId }));
-	return { authorizationId: a.id!, status: a.status ?? "CREATED" };
+	return { authorizationId: a.id!, status: a.status ?? "UNKNOWN", amountCents: cents(a.amount?.value) };
 }
 
 export type RefundResult = { refundId: string; status: string };

@@ -23,5 +23,16 @@ export const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 /** Signed cost impact label used in resolution option metadata, e.g. "-$39.00". */
 export const costImpact = (cents: number) => `${cents < 0 ? "-" : "+"}${usd(Math.abs(cents))}`;
 
-/** Half-up rounding of a fractional cent amount. */
-export const roundCents = (x: number) => Math.round(x + Number.EPSILON);
+/**
+ * Integer-exact percentage of an amount, rounded half up. Floating point would
+ * get 3000 x 7.25% = 217.4999... wrong; integers cannot.
+ */
+export function percentOf(cents: number, pct: number): number {
+	return Math.floor((cents * pct + 50) / 100);
+}
+
+/** Tax at a decimal rate (0.0725), via parts-per-million so rates like 8.875% stay exact. */
+export function taxOf(cents: number, rate: number): number {
+	const ppm = Math.round(rate * 1_000_000);
+	return Math.floor((cents * ppm + 500_000) / 1_000_000);
+}

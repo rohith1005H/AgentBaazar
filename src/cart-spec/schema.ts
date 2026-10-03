@@ -172,7 +172,8 @@ export const CartItem = z.object({
 export type CartItem = z.infer<typeof CartItem>;
 
 export const PaymentMethod = z.object({
-	type: z.literal("paypal"),
+	/** The spec enum is "paypal"; PayPal's integration guide sends "PAYPAL". Accept both, emit lowercase. */
+	type: z.preprocess((v) => (typeof v === "string" ? v.toLowerCase() : v), z.literal("paypal")),
 	/** PayPal order id (we issue it at cart create) */
 	token: z.string().optional(),
 	/** Present after the buyer approved */
@@ -277,14 +278,13 @@ export const CartRequest = PayPalCart.pick({
 export type CartRequest = z.infer<typeof CartRequest>;
 
 /**
- * What a caller sends to POST /merchant-cart/{id}/checkout: the cart as the
- * caller last saw it, with `payment_method.token` and `payer_id` set after the
- * buyer approved in PayPal. The merchant ignores everything except
- * payment_method and re-validates against its own stored cart.
+ * What a caller sends to POST /merchant-cart/{id}/checkout. The spec body is the
+ * whole cart with `payment_method.token` and `payer_id` set after approval, but the
+ * merchant re-validates its own stored cart and reads only payment_method. The rest
+ * is accepted as-is, so an echoed cart that fails our stricter field checks cannot
+ * turn an approved payment into a 400.
  */
-export const CheckoutRequest = PayPalCart.extend({
-	payment_method: PaymentMethod,
-});
+export const CheckoutRequest = z.looseObject({ payment_method: PaymentMethod });
 export type CheckoutRequest = z.infer<typeof CheckoutRequest>;
 
 /** Error envelope for 4xx/5xx, same shape PayPal uses. */

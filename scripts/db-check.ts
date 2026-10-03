@@ -3,7 +3,7 @@ import { neon } from "@neondatabase/serverless";
 
 async function main() {
 	const url = process.env.DATABASE_URL;
-	if (!url) throw new Error("DATABASE_URL not set (run via `neon-env run -- pnpm db:check` or export it)");
+	if (!url) throw new Error("DATABASE_URL not set (copy .env.example to .env)");
 	const sql = neon(url);
 	const rows = (await sql`
 		select table_schema, string_agg(table_name, ', ' order by table_name) as tables

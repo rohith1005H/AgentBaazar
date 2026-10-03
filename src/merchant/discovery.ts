@@ -10,7 +10,8 @@ import { z } from "zod";
 import type { CartRequest, PayPalCart } from "@/src/cart-spec/schema";
 import { db } from "@/src/db/client";
 import { cartEvents, coupons, orders, products, variants } from "@/src/db/schema";
-import { type ApiResult, notFound, unprocessable } from "./api/http";
+import { type ApiResult, badRequest, notFound, unprocessable } from "./api/http";
+import type { CartCaller } from "./auth/jwt-verify";
 import { toCents, toMoney, usd } from "./cart/money";
 import * as repo from "./cart/repo";
 
@@ -47,11 +48,14 @@ const STOP = new Set([
 export async function searchCatalog(store: string, params: URLSearchParams): Promise<ApiResult> {
 	const m = await repo.getMerchant(store);
 	if (!m) throw notFound("STORE_NOT_FOUND", `Store '${store}' does not exist`);
+	const rawMax = params.get("max_price");
+	if (rawMax !== null && !/^\d+(\.\d{1,2})?$/.test(rawMax))
+		throw badRequest("max_price must be a decimal amount like 40.00", "max_price", "INVALID_FORMAT");
 	const tokens = (params.get("q") ?? "")
 		.toLowerCase()
 		.split(/[^a-z0-9]+/)
 		.filter((t) => t.length > 1 && !STOP.has(t));
-	const maxPrice = params.get("max_price") ? toCents(params.get("max_price")!) : undefined;
+	const maxPrice = rawMax ? toCents(rawMax) : undefined;
 	const limit = Math.min(Number(params.get("limit") ?? 10) || 10, 25);
 
 	const rows = await db()
@@ -124,12 +128,11 @@ const OfferRequest = z.object({ cart_id: z.string(), reason: z.string().max(200)
  * can get. The best single applicable offer is minted as a one-time coupon bound
  * to this cart; asking again returns the same coupon.
  */
-export async function makeOffer(store: string, body: unknown): Promise<ApiResult> {
+export async function makeOffer(m: repo.Merchant, body: unknown, caller: CartCaller): Promise<ApiResult> {
 	const { cart_id, reason } = OfferRequest.parse(body);
-	const m = await repo.getMerchant(store);
-	if (!m) throw notFound("STORE_NOT_FOUND", `Store '${store}' does not exist`);
 	const row = await repo.getCartRow(m.id, cart_id);
-	if (!row) throw notFound("CART_NOT_FOUND", `Cart with ID '${cart_id}' does not exist`);
+	if (!row || (row.jwtSub && row.jwtSub !== caller.subject))
+		throw notFound("CART_NOT_FOUND", `Cart with ID '${cart_id}' does not exist`);
 	if (row.status === "COMPLETED") throw unprocessable("Cart is already checked out");
 
 	const now = new Date();

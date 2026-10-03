@@ -10,13 +10,19 @@
  *   - a PayPal order exists once the cart is valid; its id is `payment_method.token`
  *   - cart changes PATCH the order; if the buyer already approved a smaller amount,
  *     or the order can no longer be patched, a fresh order (and approval) is issued
- *   - checkout re-validates live stock, prices and coupons, then
- *       reserve (stock + coupons + PENDING order, one transaction)
- *       -> charge (authorize, or capture in capture mode; idempotent request ids)
- *       -> confirm (order AUTHORIZED/CAPTURED, cart COMPLETED)
- *     and compensates the reservation if PayPal declines.
+ *   - checkout re-validates live stock, prices and coupons, checks the PayPal order is
+ *     APPROVED by this payer for exactly the cart total, then
+ *       reserve  one transaction: claim the cart version (concurrent PUTs now get 409),
+ *                take stock and coupons, insert a PENDING order with a snapshot of the cart
+ *       charge   authorize (or capture in capture mode) with a request id derived from the
+ *                cart, so PayPal never charges twice for one cart
+ *       confirm  only if PayPal's status and amount match: order AUTHORIZED/CAPTURED,
+ *                cart COMPLETED
+ *   - a decline (or a non-success status) releases the reservation; a mismatched amount
+ *     is voided/refunded, then released; a lost response (timeout, 5xx) keeps the
+ *     reservation, and a retry after CHECKOUT_STALE_MS resumes it with the same request id.
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import {
 	type ApiError,
@@ -26,11 +32,12 @@ import {
 	PayPalCart,
 	type ValidationIssue,
 } from "@/src/cart-spec/schema";
+import { signLink } from "@/src/crypto";
 import { db } from "@/src/db/client";
 import { cartEvents, carts, orderItems, orders } from "@/src/db/schema";
 import { publish } from "@/src/events/bus";
 import { log } from "@/src/log";
-import { type ApiResult, badRequest, HttpError, notFound, unprocessable } from "@/src/merchant/api/http";
+import { type ApiResult, badRequest, HttpError, unprocessable } from "@/src/merchant/api/http";
 import type { CartCaller } from "@/src/merchant/auth/jwt-verify";
 import { PayPalError } from "@/src/merchant/paypal/http";
 import * as paypal from "@/src/merchant/paypal/orders";
@@ -45,9 +52,8 @@ type PaymentState = { orderId: string; approvalUrl?: string; amountCents: number
 
 // ---------------------------------------------------------------- create / get / update
 
-export async function createCart(store: string, body: unknown, caller: CartCaller): Promise<ApiResult> {
+export async function createCart(m: repo.Merchant, body: unknown, caller: CartCaller): Promise<ApiResult> {
 	const request = CartRequest.parse(body);
-	const m = await requireMerchant(store);
 	const id = `CART-${ulid()}`;
 	const { evaluation } = await evaluate(m, id, request);
 	const pay = evaluation.valid ? await syncPayPalOrder(m, id, 0, evaluation) : undefined;
@@ -69,22 +75,27 @@ export async function createCart(store: string, body: unknown, caller: CartCalle
 		await tx.insert(cartEvents).values(event(id, "created", cart));
 	});
 	announce(m.id, cart, evaluation);
-	// Spec: 201 for a created cart, including one that comes back with validation issues.
-	return { status: 201, body: cart };
+	// Spec (createCart): 201 with a payment token when the cart is ready, 200 + validation_issues otherwise.
+	return { status: evaluation.valid ? 201 : 200, body: cart };
 }
 
-export async function getCart(store: string, cartId: string): Promise<ApiResult> {
-	const m = await requireMerchant(store);
-	const row = await requireCart(m.id, cartId);
+export async function getCart(m: repo.Merchant, cartId: string, caller: CartCaller): Promise<ApiResult> {
+	const row = await requireCart(m.id, cartId, caller);
 	return { status: 200, body: row.payload };
 }
 
-export async function updateCart(store: string, cartId: string, body: unknown): Promise<ApiResult> {
+export async function updateCart(
+	m: repo.Merchant,
+	cartId: string,
+	body: unknown,
+	caller: CartCaller,
+): Promise<ApiResult> {
 	checkCartId(cartId);
 	const request = CartRequest.parse(body);
-	const m = await requireMerchant(store);
-	const row = await requireCart(m.id, cartId);
+	const row = await requireCart(m.id, cartId, caller);
 	if (row.status === "COMPLETED") throw alreadyCompleted(cartId);
+	// Do not touch the PayPal order while a checkout holds it.
+	if (row.paypalOrderId && (await repo.orderForPayPalOrder(row.paypalOrderId))) throw checkoutInProgress();
 
 	const { evaluation } = await evaluate(m, cartId, request);
 	const current = paymentOf(row);
@@ -111,8 +122,13 @@ export async function updateCart(store: string, cartId: string, body: unknown): 
 
 // ---------------------------------------------------------------- checkout
 
+/** A PENDING order older than this, with no live request behind it, is resumed by the next checkout. */
+const staleAfterMs = () => Number(process.env.CHECKOUT_STALE_MS ?? 30_000);
+
+type Charge = { authorizationId?: string; captureId?: string; status: string; amountCents: number };
+
 export async function checkoutCart(
-	store: string,
+	m: repo.Merchant,
 	cartId: string,
 	body: unknown,
 	caller: CartCaller,
@@ -129,9 +145,7 @@ export async function checkoutCart(
 			"MISSING_REQUIRED_FIELD",
 		);
 
-	const m = await requireMerchant(store);
-	const row = await requireCart(m.id, cartId);
-
+	const row = await requireCart(m.id, cartId, caller);
 	if (row.status === "COMPLETED") {
 		// Replaying a successful checkout returns the same result (idempotent).
 		if (row.paypalOrderId === token) return { status: 200, body: row.payload };
@@ -140,124 +154,226 @@ export async function checkoutCart(
 	if (token !== row.paypalOrderId)
 		throw badRequest("PayPal token does not belong to this cart", "payment_method.token", "INVALID_TOKEN");
 
-	// 1. Re-validate against live stock, prices and coupons.
-	const request = CartRequest.parse(row.request);
-	const { evaluation, catalog } = await evaluate(m, cartId, request);
-	if (!evaluation.valid) {
-		await saveQuietly(row, cartBody(cartId, evaluation, paymentOf(row)), request);
-		throw unprocessable("Cart is not ready for checkout", details(evaluation.cart.validation_issues ?? []));
+	const creds = repo.credsFor(m);
+	const existing = await repo.orderForPayPalOrder(token);
+	let order: repo.OrderRow;
+	let snapshot: PayPalCart;
+
+	if (existing) {
+		// An earlier attempt reserved stock but did not finish. Resume it: the charge below
+		// reuses that attempt's PayPal-Request-Id, so PayPal returns the original result
+		// instead of charging twice.
+		if (existing.status !== "PENDING") return finishWithoutCharge(m, row, existing);
+		if (Date.now() - existing.createdAt.getTime() < staleAfterMs()) throw checkoutInProgress();
+		order = existing;
+		snapshot = PayPalCart.parse(row.payload);
+	} else {
+		// 1. Re-validate against live stock, prices and coupons.
+		const request = CartRequest.parse(row.request);
+		const { evaluation, catalog } = await evaluate(m, cartId, request);
+		if (!evaluation.valid) {
+			await saveQuietly(row, cartBody(cartId, evaluation, paymentOf(row)), request);
+			throw unprocessable("Cart is not ready for checkout", details(evaluation.cart.validation_issues ?? []));
+		}
+
+		// 2. The buyer must have approved exactly this order and amount.
+		const paypalOrder = await paypal.getOrder(creds, token);
+		if (paypalOrder.status !== "APPROVED")
+			throw unprocessable("The buyer has not approved this payment yet", [
+				{
+					field: "payment_method",
+					issue: "PAYER_ACTION_REQUIRED",
+					description: `Approve at ${row.approvalUrl ?? "the approval_url"}`,
+				},
+			]);
+		if (paypalOrder.payer?.payerId && paypalOrder.payer.payerId !== payerId)
+			throw badRequest("payer_id does not match the approved order", "payment_method.payer_id", "INVALID_PAYER");
+		const approvedCents = toCents(paypalOrder.purchaseUnits?.[0]?.amount?.value ?? "0");
+		if (approvedCents !== evaluation.totals.totalCents)
+			throw amountChanged(approvedCents, evaluation.totals.totalCents);
+
+		// 3. Reserve stock and coupons, record a PENDING order, and claim the cart version
+		//    so a concurrent PUT can no longer change it.
+		snapshot = cartBody(cartId, evaluation, paymentOf(row));
+		order = await reserve(m.id, row, request, evaluation, catalog, snapshot, String(caller.payload.iss ?? ""));
 	}
 
-	// 2. The buyer must have approved exactly this order and amount.
-	const creds = repo.credsFor(m);
-	const order = await paypal.getOrder(creds, token);
-	if (order.status !== "APPROVED")
-		throw unprocessable("The buyer has not approved this payment yet", [
-			{
-				field: "payment_method",
-				issue: "PAYER_ACTION_REQUIRED",
-				description: `Approve at ${row.approvalUrl ?? "the approval_url"}`,
-			},
-		]);
-	if (order.payer?.payerId && order.payer.payerId !== payerId)
-		throw badRequest("payer_id does not match the approved order", "payment_method.payer_id", "INVALID_PAYER");
-	const approvedCents = toCents(order.purchaseUnits?.[0]?.amount?.value ?? "0");
-	if (approvedCents !== evaluation.totals.totalCents)
-		throw unprocessable("Cart total changed after approval; update the cart and approve again", [
-			{
-				field: "totals.total",
-				issue: "AMOUNT_CHANGED",
-				description: `Approved ${approvedCents / 100}, cart is now ${evaluation.totals.totalCents / 100}`,
-			},
-		]);
-
-	// 3. Reserve stock and coupons, record a PENDING order.
-	const orderId = await reserve(m.id, cartId, token, request, evaluation, catalog, String(caller.payload.iss ?? ""));
-
-	// 4. Charge. Request ids make retries safe: PayPal returns the original result.
-	let charge: { authorizationId?: string; captureId?: string; status: string };
+	// 4. Charge (authorize, or capture in capture mode). Idempotent per cart.
+	let charge: Charge;
 	try {
 		charge =
 			m.paymentMode === "capture"
 				? await paypal.captureOrder(creds, token, `${cartId}-capture`)
 				: await paypal.authorizeOrder(creds, token, `${cartId}-authorize`);
 	} catch (e) {
-		await release(m.id, orderId, evaluation, catalog);
-		await db()
-			.insert(cartEvents)
-			.values(event(cartId, "paypal_error", { error: errSummary(e) }));
-		throw chargeFailure(e, row.approvalUrl);
+		await recordEvent(cartId, "paypal_error", { error: errSummary(e) });
+		if (e instanceof PayPalError && e.status < 500) {
+			await release(m.id, order.id);
+			throw chargeFailure(e, row.approvalUrl);
+		}
+		// Outcome unknown (timeout, network, PayPal 5xx after retries): keep the reservation so a
+		// retry resumes this exact payment rather than orphaning an authorization.
+		throw new HttpError(502, {
+			name: "PAYMENT_PROCESSOR_ERROR",
+			message: "PayPal did not confirm the payment; retry checkout to resume it",
+			details: [{ field: "payment_method", issue: "PAYMENT_PROCESSOR_UNAVAILABLE", description: errText(e) }],
+		});
 	}
 
-	// 5. Confirm.
-	const completed = PayPalCart.parse({
-		id: cartId,
-		...evaluation.cart,
-		status: "COMPLETED",
-		validation_status: "VALID",
-		validation_issues: [],
-		payment_method: { type: "paypal", token, payer_id: payerId },
-		payment_confirmation: {
-			merchant_order_number: orderId,
-			order_review_page: `${publicUrl()}/m/${m.id}/orders/${orderId}`,
-		},
-	});
-	const status = m.paymentMode === "capture" ? "CAPTURED" : "AUTHORIZED";
+	// 5. Trust PayPal's answer, not our expectation: status and amount must match.
+	const accepted = m.paymentMode === "capture" ? ["COMPLETED", "PENDING"] : ["CREATED", "PENDING"];
+	if (!accepted.includes(charge.status)) {
+		await release(m.id, order.id);
+		await recordEvent(cartId, "paypal_error", { declined_status: charge.status });
+		throw unprocessable("Payment was declined", [
+			{ field: "payment_method", issue: "PAYMENT_DECLINED", description: `PayPal returned ${charge.status}` },
+		]);
+	}
+	if (charge.amountCents !== order.totalCents) {
+		// The PayPal order changed under us (e.g. a concurrent cart update patched it). Undo the charge.
+		if (charge.authorizationId) await paypal.voidAuthorization(creds, charge.authorizationId);
+		if (charge.captureId)
+			await paypal.refundCapture(creds, charge.captureId, `${cartId}-mismatch-refund`, {
+				note: "Cart changed during checkout",
+			});
+		await release(m.id, order.id);
+		await recordEvent(cartId, "paypal_error", {
+			amount_mismatch: { charged: charge.amountCents, expected: order.totalCents },
+		});
+		throw new HttpError(409, {
+			name: "CART_CHANGED_DURING_CHECKOUT",
+			message:
+				"The cart changed while it was being paid for; the payment was released. GET the cart and approve again.",
+		});
+	}
+
+	// 6. Confirm.
+	const status =
+		m.paymentMode === "capture"
+			? charge.status === "COMPLETED"
+				? "CAPTURED"
+				: "CAPTURE_PENDING"
+			: charge.status === "CREATED"
+				? "AUTHORIZED"
+				: "PAYMENT_PENDING";
+	return confirm(m, row, order, snapshot, { ...charge, orderStatus: status, payerId });
+}
+
+/**
+ * Write the outcome: order status and PayPal ids, cart COMPLETED with the spec's
+ * payment_confirmation. Only a PENDING order is moved, so two confirms cannot race.
+ */
+async function confirm(
+	m: repo.Merchant,
+	row: repo.CartRow,
+	order: repo.OrderRow,
+	snapshot: PayPalCart,
+	c: Charge & { orderStatus: string; payerId: string },
+): Promise<ApiResult> {
+	const completed = completedCart(m, row.id, order.id, snapshot, row.paypalOrderId!, c.payerId);
 	await db().transaction(async (tx) => {
 		await tx
 			.update(orders)
 			.set({
-				status,
-				authorizationId: charge.authorizationId,
-				captureId: charge.captureId,
-				capturedAt: charge.captureId ? new Date() : null,
+				status: c.orderStatus,
+				authorizationId: c.authorizationId,
+				captureId: c.captureId,
+				capturedAt: c.captureId ? new Date() : null,
 			})
-			.where(eq(orders.id, orderId));
+			.where(and(eq(orders.id, order.id), eq(orders.status, "PENDING")));
 		await tx
 			.update(carts)
 			.set({
 				status: "COMPLETED",
 				validationStatus: "VALID",
 				payload: completed as Record<string, unknown>,
-				payerId,
-				version: row.version + 1,
+				payerId: c.payerId,
 				completedAt: new Date(),
 				updatedAt: new Date(),
 			})
-			.where(eq(carts.id, cartId));
+			.where(eq(carts.id, row.id));
 		await tx.insert(cartEvents).values(
-			event(cartId, "checkout", {
-				order: orderId,
-				order_status: status,
-				paypal_status: charge.status,
-				authorization_id: charge.authorizationId,
-				capture_id: charge.captureId,
+			event(row.id, "checkout", {
+				order: order.id,
+				order_status: c.orderStatus,
+				paypal_status: c.status,
+				authorization_id: c.authorizationId,
+				capture_id: c.captureId,
 			}),
 		);
 	});
-	publish({ type: "order", store: m.id, orderId, status, totalCents: evaluation.totals.totalCents });
-	log.info({ store: m.id, cartId, orderId, status, total: evaluation.totals.totalCents }, "checkout completed");
+	publish({ type: "order", store: m.id, orderId: order.id, status: c.orderStatus, totalCents: order.totalCents });
+	log.info({ store: m.id, cartId: row.id, orderId: order.id, status: c.orderStatus }, "checkout completed");
 	return { status: 200, body: completed };
+}
+
+/** The order was already charged but the cart was never marked complete (crash between the two writes). */
+async function finishWithoutCharge(m: repo.Merchant, row: repo.CartRow, order: repo.OrderRow): Promise<ApiResult> {
+	if (!["AUTHORIZED", "CAPTURED", "PAYMENT_PENDING", "CAPTURE_PENDING"].includes(order.status))
+		throw alreadyCompleted(row.id);
+	const completed = completedCart(
+		m,
+		row.id,
+		order.id,
+		PayPalCart.parse(row.payload),
+		row.paypalOrderId!,
+		row.payerId ?? undefined,
+	);
+	await db()
+		.update(carts)
+		.set({
+			status: "COMPLETED",
+			validationStatus: "VALID",
+			payload: completed as Record<string, unknown>,
+			completedAt: new Date(),
+		})
+		.where(eq(carts.id, row.id));
+	return { status: 200, body: completed };
+}
+
+function completedCart(
+	m: repo.Merchant,
+	cartId: string,
+	orderId: string,
+	snapshot: PayPalCart,
+	token: string,
+	payerId?: string,
+): PayPalCart {
+	return PayPalCart.parse({
+		...snapshot,
+		id: cartId,
+		status: "COMPLETED",
+		validation_status: "VALID",
+		validation_issues: [],
+		payment_method: { type: "paypal", token, ...(payerId && { payer_id: payerId }) },
+		payment_confirmation: { merchant_order_number: orderId, order_review_page: orderReviewUrl(m.id, orderId) },
+	});
 }
 
 async function reserve(
 	merchantId: string,
-	cartId: string,
-	paypalOrderId: string,
+	row: repo.CartRow,
 	request: CartRequest,
 	evaluation: Evaluation,
 	catalog: Map<string, CatalogVariant>,
+	snapshot: PayPalCart,
 	agentPlatform: string,
-): Promise<string> {
+): Promise<repo.OrderRow> {
 	return db().transaction(async (tx) => {
+		// Claim the cart: any PUT that read the old version now fails with 409.
+		const claimed = await repo.updateCartIfVersion(tx, row.id, row.version, {
+			payload: snapshot as Record<string, unknown>,
+		});
+		if (!claimed) throw conflict();
+
 		const orderId = await repo.nextOrderNumber(tx);
-		const inserted = await tx
+		const [order] = await tx
 			.insert(orders)
 			.values({
 				id: orderId,
-				cartId,
+				cartId: row.id,
 				merchantId,
-				paypalOrderId,
+				paypalOrderId: row.paypalOrderId!,
 				status: "PENDING",
 				totalCents: evaluation.totals.totalCents,
 				totals: evaluation.cart.totals as Record<string, unknown>,
@@ -267,9 +383,8 @@ async function reserve(
 				agentPlatform: agentPlatform || null,
 			})
 			.onConflictDoNothing({ target: orders.paypalOrderId })
-			.returning({ id: orders.id });
-		if (inserted.length === 0)
-			throw new HttpError(409, { name: "CHECKOUT_IN_PROGRESS", message: "This cart is already being checked out" });
+			.returning();
+		if (!order) throw checkoutInProgress();
 
 		for (const line of evaluation.lines) {
 			// back-orders and pre-orders are not drawn from on-hand stock
@@ -283,12 +398,14 @@ async function reserve(
 					},
 				]);
 		}
-		for (const c of evaluation.cart.applied_coupons ?? []) {
-			if (!(await repo.consumeCoupon(tx, merchantId, c.code)))
+		const coupons = (evaluation.cart.applied_coupons ?? []).map((c) => c.code);
+		for (const code of coupons) {
+			if (!(await repo.consumeCoupon(tx, merchantId, code)))
 				throw unprocessable("Coupon was used up during checkout", [
-					{ field: "coupons", issue: "DISCOUNT_USAGE_LIMIT_EXCEEDED", description: `${c.code} is no longer available` },
+					{ field: "coupons", issue: "DISCOUNT_USAGE_LIMIT_EXCEEDED", description: `${code} is no longer available` },
 				]);
 		}
+		await tx.update(orders).set({ couponCodes: coupons }).where(eq(orders.id, orderId));
 		await tx.insert(orderItems).values(
 			evaluation.lines.map((l, i) => ({
 				id: `${orderId}-${i + 1}`,
@@ -300,31 +417,32 @@ async function reserve(
 				stockReserved: catalog.get(l.sku)?.availability === "in_stock",
 			})),
 		);
-		return orderId;
+		return { ...order, couponCodes: coupons };
 	});
 }
 
-/** Undo a reservation after PayPal declined: stock and coupons back, PENDING order removed. */
-async function release(
-	merchantId: string,
-	orderId: string,
-	evaluation: Evaluation,
-	catalog: Map<string, CatalogVariant>,
-) {
+/**
+ * Undo a reservation after PayPal declined: stock and coupons back, PENDING order removed.
+ * Works from what the order recorded, so it is exact even if the catalog changed since.
+ */
+async function release(merchantId: string, orderId: string) {
 	await db().transaction(async (tx) => {
-		for (const line of evaluation.lines) {
-			if (catalog.get(line.sku)?.availability === "in_stock") await repo.releaseStock(tx, line.sku, line.quantity);
-		}
-		for (const c of evaluation.cart.applied_coupons ?? []) await repo.releaseCoupon(tx, merchantId, c.code);
-		await tx.delete(orderItems).where(eq(orderItems.orderId, orderId));
+		const [order] = await tx
+			.select()
+			.from(orders)
+			.where(and(eq(orders.id, orderId), eq(orders.status, "PENDING")))
+			.for("update");
+		if (!order) return;
+		const items = await tx.delete(orderItems).where(eq(orderItems.orderId, orderId)).returning();
 		await tx.delete(orders).where(eq(orders.id, orderId));
+		for (const i of items) if (i.stockReserved) await repo.releaseStock(tx, i.variantId, i.qty);
+		for (const code of order.couponCodes ?? []) await repo.releaseCoupon(tx, merchantId, code);
 	});
 }
 
 const DECLINES = new Set(["INSTRUMENT_DECLINED", "PAYER_CANNOT_PAY", "TRANSACTION_REFUSED", "PAYER_ACTION_REQUIRED"]);
 
-function chargeFailure(e: unknown, approvalUrl: string | null): Error {
-	if (!(e instanceof PayPalError)) return e as Error;
+function chargeFailure(e: PayPalError, approvalUrl: string | null): Error {
 	if (e.issue && DECLINES.has(e.issue))
 		return unprocessable("Payment was declined", [
 			{
@@ -333,18 +451,6 @@ function chargeFailure(e: unknown, approvalUrl: string | null): Error {
 				description: `PayPal ${e.issue}: the buyer can choose another funding source at ${approvalUrl ?? "the approval_url"}`,
 			},
 		]);
-	if (e.status >= 500)
-		return new HttpError(500, {
-			name: "PAYMENT_PROCESSOR_ERROR",
-			message: "PayPal is unavailable; retry the checkout",
-			details: [
-				{
-					field: "payment_method",
-					issue: "PAYMENT_PROCESSOR_UNAVAILABLE",
-					description: `PayPal debug_id ${e.debugId ?? "n/a"}`,
-				},
-			],
-		});
 	return unprocessable("Payment could not be completed", [
 		{ field: "payment_method", issue: e.issue ?? e.name, description: `PayPal debug_id ${e.debugId ?? "n/a"}` },
 	]);
@@ -404,16 +510,11 @@ function approvalReturn(kind: "return" | "cancel", store: string, cartId: string
 
 // ---------------------------------------------------------------- helpers
 
-async function requireMerchant(id: string): Promise<repo.Merchant> {
-	const m = await repo.getMerchant(id);
-	if (!m) throw notFound("STORE_NOT_FOUND", `Store '${id}' does not exist`);
-	return m;
-}
-
-async function requireCart(merchantId: string, cartId: string): Promise<repo.CartRow> {
+/** Loads a cart of this store. A cart created by another caller is reported as not found. */
+async function requireCart(merchantId: string, cartId: string, caller: CartCaller): Promise<repo.CartRow> {
 	checkCartId(cartId);
 	const row = await repo.getCartRow(merchantId, cartId);
-	if (!row)
+	if (!row || (row.jwtSub && row.jwtSub !== caller.subject))
 		throw new HttpError(404, {
 			name: "CART_NOT_FOUND",
 			message: `Cart with ID '${cartId}' does not exist`,
@@ -486,6 +587,33 @@ const alreadyCompleted = (cartId: string) =>
 	unprocessable("Cart is already checked out", [
 		{ field: "cartId", issue: "CART_ALREADY_COMPLETED", description: `${cartId} was completed; create a new cart` },
 	]);
+
+const checkoutInProgress = () =>
+	new HttpError(409, { name: "CHECKOUT_IN_PROGRESS", message: "This cart is being checked out; retry shortly" });
+
+const amountChanged = (approvedCents: number, totalCents: number) =>
+	unprocessable("Cart total changed after approval; update the cart and approve again", [
+		{
+			field: "totals.total",
+			issue: "AMOUNT_CHANGED",
+			description: `Approved ${(approvedCents / 100).toFixed(2)}, cart is now ${(totalCents / 100).toFixed(2)}`,
+		},
+	]);
+
+/** Signed so the link works for the buyer without exposing other orders to guessing. */
+const orderReviewUrl = (store: string, orderId: string) =>
+	`${publicUrl()}/m/${store}/orders/${orderId}?k=${signLink(`${store}/${orderId}`)}`;
+
+async function recordEvent(cartId: string, kind: string, data: Record<string, unknown>) {
+	await db()
+		.insert(cartEvents)
+		.values(event(cartId, kind, data));
+}
+
+const errText = (e: unknown) =>
+	e instanceof PayPalError
+		? `PayPal ${e.status} ${e.issue ?? e.name} debug_id ${e.debugId ?? "n/a"}`
+		: (e as Error).message;
 
 const conflict = () =>
 	new HttpError(409, {

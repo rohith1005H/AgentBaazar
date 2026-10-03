@@ -2,6 +2,6 @@
 import { readJson, storeRoute } from "@/src/merchant/api/http";
 import { createCart } from "@/src/merchant/cart/service";
 
-export const POST = storeRoute<{ store: string }>(async ({ req, params, caller }) =>
-	createCart(params.store, await readJson(req), caller),
+export const POST = storeRoute<{ store: string }>(async ({ req, merchant, caller }) =>
+	createCart(merchant, await readJson(req), caller),
 );

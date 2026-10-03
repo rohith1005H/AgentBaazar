@@ -25,7 +25,7 @@ import type {
 } from "@/src/cart-spec/schema";
 import type { MerchantPolicy } from "@/src/db/schema";
 import { formatAddress, isPoBox, stateOf, validateUsAddress } from "./address";
-import { costImpact, roundCents, toCents, toMoney, usd } from "./money";
+import { costImpact, percentOf, taxOf, toCents, toMoney, usd } from "./money";
 import {
 	ACCEPT_BACK_ORDER,
 	ACCEPT_PRE_ORDER,
@@ -102,7 +102,7 @@ export function evaluateCart(input: EvaluateInput): Evaluation {
 			? shipping
 			: 0;
 	const rate = shippable ? (policy.taxRates[state] ?? policy.taxRates["*"] ?? 0) : 0;
-	const tax = roundCents(discountedSubtotal * rate);
+	const tax = taxOf(discountedSubtotal, rate);
 	const total = discountedSubtotal + shipping - shippingDiscount + tax;
 
 	// ---- 6. status ---------------------------------------------------------
@@ -173,7 +173,7 @@ function mergeItems(items: CartItem[], issues: ValidationIssue[]): Line[] {
 				user_message: "One of the items is missing a product identifier.",
 				field: `items[${i}].variant_id`,
 				context: { specific_issue: "REQUIRED_FIELD_MISSING", field_name: `items[${i}].variant_id` },
-				resolution_options: [option("PROVIDE_MISSING_FIELD", "Specify which product variant to buy", "high")],
+				resolution_options: [option("PROVIDE_MISSING_FIELD", "Specify which product variant to buy", "HIGH")],
 			});
 			return;
 		}
@@ -195,7 +195,7 @@ function priceLine(line: Line, catalog: ReadonlyMap<string, CatalogVariant>, iss
 			variant_id: line.id,
 			context: { specific_issue: "ITEM_NOT_FOUND", field_name: "variant_id", provided_value: line.id },
 			resolution_options: [
-				option("REMOVE_ITEM", "Remove from cart", "high", { op: "remove_item", variant_id: line.id }),
+				option("REMOVE_ITEM", "Remove from cart", "HIGH", { op: "remove_item", variant_id: line.id }),
 			],
 		});
 		return line;
@@ -211,8 +211,8 @@ function priceLine(line: Line, catalog: ReadonlyMap<string, CatalogVariant>, iss
 			variant_id: line.id,
 			context: { restricted_items: [line.id] },
 			resolution_options: [
-				{ ...option("REDIRECT_TO_MERCHANT", "Buy on the store's site", "high"), ...(v.url && { url: v.url }) },
-				option("REMOVE_ITEM", "Remove from cart", "low", { op: "remove_item", variant_id: line.id }),
+				{ ...option("REDIRECT_TO_MERCHANT", "Buy on the store's site", "HIGH"), ...(v.url && { url: v.url }) },
+				option("REMOVE_ITEM", "Remove from cart", "LOW", { op: "remove_item", variant_id: line.id }),
 			],
 		});
 		return priced;
@@ -243,7 +243,7 @@ function checkPrice(line: Line, issues: ValidationIssue[]) {
 				found_currencies: [quoted.currency_code],
 			},
 			resolution_options: [
-				option("USE_DIFFERENT_CURRENCY", `Pay in ${v.currency}`, "high", {
+				option("USE_DIFFERENT_CURRENCY", `Pay in ${v.currency}`, "HIGH", {
 					op: "set_price",
 					variant_id: line.id,
 					price: toMoney(current, v.currency),
@@ -272,14 +272,14 @@ function checkPrice(line: Line, issues: ValidationIssue[]) {
 			option(
 				"ACCEPT_NEW_PRICE",
 				`Continue with ${usd(current)}`,
-				"high",
+				"HIGH",
 				{ op: "set_price", variant_id: line.id, price: toMoney(current) },
 				{ cost_impact: costImpact(delta * line.quantity), auto_applicable: delta < 0 },
 			),
 			option(
 				"REMOVE_ITEM",
 				"Remove from cart",
-				"medium",
+				"MEDIUM",
 				{ op: "remove_item", variant_id: line.id },
 				{ cost_impact: costImpact(-quotedCents * line.quantity) },
 			),
@@ -298,7 +298,7 @@ function checkStock(line: Line, catalog: ReadonlyMap<string, CatalogVariant>, is
 	const remove = option(
 		"REMOVE_ITEM",
 		"Remove from cart",
-		"low",
+		"LOW",
 		{ op: "remove_item", variant_id: line.id },
 		{ cost_impact: costImpact(-lineCents) },
 	);
@@ -324,7 +324,7 @@ function checkStock(line: Line, catalog: ReadonlyMap<string, CatalogVariant>, is
 				option(
 					back ? "ACCEPT_BACK_ORDER" : "ACCEPT_PRE_ORDER",
 					`Order anyway${when}`,
-					"high",
+					"HIGH",
 					{ op: "add_custom_option", variant_id: line.id, option: { name: flag, value: "true" } },
 					{ cost_impact: "$0.00" },
 				),
@@ -356,7 +356,7 @@ function checkStock(line: Line, catalog: ReadonlyMap<string, CatalogVariant>, is
 				option(
 					"MODIFY_CART",
 					`Buy ${v.stockQty} instead`,
-					"high",
+					"HIGH",
 					{ op: "set_quantity", variant_id: line.id, quantity: v.stockQty },
 					{ auto_applicable: true, max_quantity: v.stockQty },
 				),
@@ -387,7 +387,7 @@ function checkStock(line: Line, catalog: ReadonlyMap<string, CatalogVariant>, is
 			...alternativeOptions(v, line.quantity, catalog),
 			...(v.restockEta
 				? [
-						option("WAIT_FOR_RESTOCK", `Wait for restock (${v.restockEta})`, "medium", undefined, {
+						option("WAIT_FOR_RESTOCK", `Wait for restock (${v.restockEta})`, "MEDIUM", undefined, {
 							restock_date: v.restockEta,
 						}),
 					]
@@ -416,7 +416,7 @@ function alternativeOptions(v: CatalogVariant, qty: number, catalog: ReadonlyMap
 		option(
 			"CHOOSE_DIFFERENT_VARIANT",
 			`Switch to ${a.title}${sameUnit(a, v) ? "" : ` (${usd(unitOf(a))})`}`,
-			i === 0 ? "high" : "medium",
+			i === 0 ? "HIGH" : "MEDIUM",
 			{ op: "replace_variant", variant_id: v.id, with_variant_id: a.id },
 			{
 				// safe to apply without asking only when it costs the buyer nothing more
@@ -461,7 +461,7 @@ function missingAddress(issues: ValidationIssue[]): false {
 		user_message: "Where should this order be delivered?",
 		field: "shipping_address",
 		context: { specific_issue: "MISSING_SHIPPING_ADDRESS" },
-		resolution_options: [option("PROVIDE_MISSING_FIELD", "Add a shipping address", "high")],
+		resolution_options: [option("PROVIDE_MISSING_FIELD", "Add a shipping address", "HIGH")],
 	});
 	return false;
 }
@@ -481,8 +481,8 @@ function checkAddress(a: Address, policy: MerchantPolicy, lines: Line[], issues:
 				supported_countries: ["US"],
 			},
 			resolution_options: [
-				option("UPDATE_ADDRESS", "Ship to a US address", "high"),
-				option("CONTACT_SUPPORT", "Contact the store", "low"),
+				option("UPDATE_ADDRESS", "Ship to a US address", "HIGH"),
+				option("CONTACT_SUPPORT", "Contact the store", "LOW"),
 			],
 		});
 		return false;
@@ -502,8 +502,8 @@ function checkAddress(a: Address, policy: MerchantPolicy, lines: Line[], issues:
 				provided_address: formatAddress(a),
 			},
 			resolution_options: [
-				option("UPDATE_ADDRESS", "Correct the address", "high"),
-				option("PROVIDE_MISSING_FIELD", "Add the missing parts", "medium"),
+				option("UPDATE_ADDRESS", "Correct the address", "HIGH"),
+				option("PROVIDE_MISSING_FIELD", "Add the missing parts", "MEDIUM"),
 			],
 		});
 		return false;
@@ -519,8 +519,8 @@ function checkAddress(a: Address, policy: MerchantPolicy, lines: Line[], issues:
 			field: "shipping_address.admin_area_1",
 			context: { specific_issue: "SHIPPING_ZONE_NOT_COVERED", restricted_region: state, destination_country: "US" },
 			resolution_options: [
-				option("UPDATE_ADDRESS", "Ship somewhere else", "high"),
-				option("CONTACT_SUPPORT", "Contact the store", "low"),
+				option("UPDATE_ADDRESS", "Ship somewhere else", "HIGH"),
+				option("CONTACT_SUPPORT", "Contact the store", "LOW"),
 			],
 		});
 		return false;
@@ -541,12 +541,12 @@ function checkAddress(a: Address, policy: MerchantPolicy, lines: Line[], issues:
 				po_box_detected: true,
 			},
 			resolution_options: [
-				option("UPDATE_ADDRESS", "Use a street address instead", "high"),
+				option("UPDATE_ADDRESS", "Use a street address instead", "HIGH"),
 				...fragile.map((l) =>
 					option(
 						"REMOVE_ITEM",
 						`Remove ${l.variant?.title}`,
-						"low",
+						"LOW",
 						{ op: "remove_item", variant_id: l.id },
 						{ cost_impact: costImpact(-(l.unitCents ?? 0) * l.quantity) },
 					),
@@ -670,7 +670,7 @@ function evaluateCheckoutFields(lines: Line[], provided: CheckoutField[], issues
 				field_name: type,
 			},
 			resolution_options: [
-				option("PROVIDE_MISSING_FIELD", FIELD_PROMPTS[type] ?? `Provide ${type}`, "high", {
+				option("PROVIDE_MISSING_FIELD", FIELD_PROMPTS[type] ?? `Provide ${type}`, "HIGH", {
 					op: "set_checkout_field",
 					type,
 					value_schema: VALUE_SCHEMAS[type] ?? { type },
@@ -710,7 +710,7 @@ function applyCoupons(input: EvaluateInput, subtotal: number, issues: Validation
 		(c) => !removed.has(c),
 	);
 
-	const cap = Math.min(subtotal, roundCents((subtotal * input.policy.coupons.maxTotalPct) / 100));
+	const cap = Math.min(subtotal, percentOf(subtotal, input.policy.coupons.maxTotalPct));
 	const applied: AppliedCoupon[] = [];
 	let discount = 0;
 	let freeShipping = false;
@@ -728,7 +728,7 @@ function applyCoupons(input: EvaluateInput, subtotal: number, issues: Validation
 			applied.push({ code, description: c.description ?? "Free shipping" });
 			continue;
 		}
-		const raw = c.kind === "percent" ? roundCents((subtotal * c.value) / 100) : c.value;
+		const raw = c.kind === "percent" ? percentOf(subtotal, c.value) : c.value;
 		const amount = Math.max(0, Math.min(raw, cap - discount));
 		discount += amount;
 		applied.push({ code, description: c.description ?? undefined, discount_amount: toMoney(amount) });
@@ -751,8 +751,8 @@ function couponProblem(
 			field: "coupons",
 			context: { ...(specific && { specific_issue: specific }), coupon_code: code, ...extra },
 			resolution_options: [
-				option("REMOVE_COUPON", `Remove ${code}`, "high", { op: "remove_coupon", code }, { auto_applicable: true }),
-				option("APPLY_DIFFERENT_COUPON", "Try a different code", "low"),
+				option("REMOVE_COUPON", `Remove ${code}`, "HIGH", { op: "remove_coupon", code }, { auto_applicable: true }),
+				option("APPLY_DIFFERENT_COUPON", "Try a different code", "LOW"),
 			],
 		}) satisfies ValidationIssue;
 
@@ -798,7 +798,7 @@ function storeClosed(): ValidationIssue {
 		user_message: "The store is temporarily closed for maintenance. Please try again later.",
 		context: { specific_issue: "STORE_TEMPORARILY_CLOSED", service_status: "maintenance", retry_after: 600 },
 		resolution_options: [
-			option("RETRY_LATER", "Try again in 10 minutes", "high", undefined, {
+			option("RETRY_LATER", "Try again in 10 minutes", "HIGH", undefined, {
 				auto_applicable: true,
 				estimated_time: "10 minutes",
 			}),
@@ -809,7 +809,7 @@ function storeClosed(): ValidationIssue {
 function option(
 	action: ResolutionOption["action"],
 	label: string,
-	priority: "high" | "medium" | "low",
+	priority: "HIGH" | "MEDIUM" | "LOW",
 	apply?: CartPatch,
 	extra: Record<string, unknown> = {},
 ): ResolutionOption {
