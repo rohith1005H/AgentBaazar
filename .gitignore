@@ -1,0 +1,20 @@
+# deps / build
+node_modules/
+.next/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# local planning + copied vendor docs (not part of the product)
+research/
+STRATEGY.md
+RESOURCES.md
+BUILD.md
+PAYPAL-PRIMER.md
+OUTREACH.md
