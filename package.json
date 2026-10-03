@@ -18,7 +18,8 @@
     "register-webhook": "tsx scripts/register-webhook.ts",
     "smoke": "tsx scripts/smoke.ts",
     "keygen": "tsx scripts/keygen.ts",
-    "paypal:token": "tsx scripts/paypal-token.ts"
+    "paypal:token": "tsx scripts/paypal-token.ts",
+    "db:check": "tsx scripts/db-check.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "4.0.87",
