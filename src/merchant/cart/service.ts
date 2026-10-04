@@ -123,7 +123,7 @@ export async function updateCart(
 			.where(and(eq(carts.id, cartId), eq(carts.version, row.version)))
 			.for("update");
 		if (!locked) throw conflict();
-		if (row.paypalOrderId && (await repo.orderForPayPalOrder(row.paypalOrderId))) throw checkoutInProgress();
+		if (row.paypalOrderId && (await repo.orderForPayPalOrder(row.paypalOrderId, tx))) throw checkoutInProgress();
 
 		const current = paymentOf(row);
 		const pay = evaluation.valid ? await syncPayPalOrder(m, cartId, row.version + 1, evaluation, current) : current;
@@ -195,6 +195,8 @@ export async function checkoutCart(
 		// An earlier attempt reserved stock but did not finish (lost response, crash).
 		if (existing.status !== "PENDING") return finishWithoutCharge(m, row, existing);
 		// Take over its lease; 409 while that attempt may still be talking to PayPal.
+		// ponytail: the lease is taken once, not renewed; an attempt slower than CHECKOUT_LEASE_MS
+		// could overlap a later resume (confirm() then voids the loser). Renew it if that ever shows up.
 		if (!(await repo.takeChargeLease(existing.id, leaseMs()))) throw checkoutInProgress();
 		order = existing;
 		snapshot = PayPalCart.parse(row.payload);
@@ -491,11 +493,19 @@ async function release(orderId: string) {
 
 /** Void an authorization or refund a capture that must not stand. */
 async function undoCharge(creds: PayPalCreds, cartId: string, c: Charge) {
-	if (c.authorizationId) await paypal.voidAuthorization(creds, c.authorizationId);
-	if (c.captureId)
-		await paypal.refundCapture(creds, c.captureId, stableRequestId(`${cartId}-undo-${c.captureId}`), {
-			note: "Checkout could not be completed",
-		});
+	try {
+		if (c.authorizationId) await paypal.voidAuthorization(creds, c.authorizationId);
+		if (c.captureId)
+			await paypal.refundCapture(creds, c.captureId, stableRequestId(`${cartId}-undo-${c.captureId}`), {
+				note: "Checkout could not be completed",
+			});
+	} catch (e) {
+		// Leave a trail: this payment belongs to no order and has to be voided or refunded by hand.
+		const ids = { authorization_id: c.authorizationId, capture_id: c.captureId };
+		log.error({ cartId, ...ids, err: errSummary(e) }, "could not undo a charge");
+		await recordEvent(cartId, "paypal_error", { undo_failed: { ...ids, error: errSummary(e) } });
+		throw e;
+	}
 }
 
 /** The payment PayPal already made on this order, if any (read back when resuming a checkout). */
@@ -510,16 +520,44 @@ async function chargeOnOrder(creds: PayPalCreds, token: string, mode: string): P
 		: { authorizationId: made.id, status: made.status ?? "", amountCents };
 }
 
-/** Forget a PayPal order whose payment was undone; the cart stays as it was otherwise. */
+/**
+ * Forget a PayPal order whose payment was undone. The cart is not checkout-ready until
+ * the buyer approves again; it says so, and the next PUT issues a fresh PayPal order.
+ */
 async function detachPayPalOrder(cartId: string, token: string, snapshot: PayPalCart) {
+	const cart = PayPalCart.parse({
+		...snapshot,
+		status: "INCOMPLETE",
+		validation_status: "INVALID",
+		validation_issues: [
+			{
+				code: "PAYMENT_ERROR",
+				type: "BUSINESS_RULE",
+				field: "payment_method",
+				message: "The PayPal order was voided because it no longer matched the cart",
+				user_message: "Please approve the payment again.",
+				context: { specific_issue: "PAYMENT_APPROVAL_EXPIRED" },
+				resolution_options: [
+					{
+						action: "REQUEST_APPROVAL",
+						label: "Update the cart (PUT) to get a new PayPal approval link",
+						metadata: { priority: "HIGH" },
+					},
+				],
+			},
+		],
+		payment_method: { type: "paypal" },
+	});
 	await db()
 		.update(carts)
 		.set({
+			status: cart.status!,
+			validationStatus: cart.validation_status!,
 			paypalOrderId: null,
 			approvalUrl: null,
 			paypalAmountCents: null,
 			payerId: null,
-			payload: { ...snapshot, payment_method: { type: "paypal" } } as Record<string, unknown>,
+			payload: cart as Record<string, unknown>,
 			updatedAt: new Date(),
 		})
 		.where(and(eq(carts.id, cartId), eq(carts.paypalOrderId, token)));

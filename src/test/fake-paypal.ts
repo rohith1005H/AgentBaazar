@@ -40,7 +40,12 @@ export const fake = {
 	voided: [] as string[],
 	refunded: [] as { captureId: string; amountCents?: number }[],
 	charges: 0,
-	next: { charge: undefined as ChargeBehaviour | undefined, getOrder: undefined as (() => Promise<void>) | undefined },
+	next: {
+		charge: undefined as ChargeBehaviour | undefined,
+		getOrder: undefined as (() => Promise<void>) | undefined,
+		/** make the next void fail, as PayPal being down would */
+		voidFails: false,
+	},
 	seq: 0,
 	reset() {
 		this.orders.clear();
@@ -48,7 +53,7 @@ export const fake = {
 		this.voided = [];
 		this.refunded = [];
 		this.charges = 0;
-		this.next = { charge: undefined, getOrder: undefined };
+		this.next = { charge: undefined, getOrder: undefined, voidFails: false };
 	},
 	/** The authorization PayPal made on an order */
 	authorizationOf(id: string) {
@@ -146,6 +151,10 @@ export const authorizeOrder = (_c: unknown, id: string, requestId: string) => ch
 export const captureOrder = (_c: unknown, id: string, requestId: string) => charge(id, requestId, "capture");
 
 export async function voidAuthorization(_c: unknown, authorizationId: string) {
+	if (fake.next.voidFails) {
+		fake.next.voidFails = false;
+		throw new PayPalError(503, "SERVICE_UNAVAILABLE", "try later");
+	}
 	fake.voided.push(authorizationId);
 }
 

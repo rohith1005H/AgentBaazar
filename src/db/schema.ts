@@ -242,6 +242,8 @@ export const refunds = merchant.table("refunds", {
 	paypalRefundId: text("paypal_refund_id").notNull(),
 	amountCents: integer("amount_cents").notNull(),
 	reason: text(),
+	/** The admin API's request_id, so a retry finds the refund it already made */
+	requestId: text("request_id"),
 	at: ts().notNull().defaultNow(),
 });
 

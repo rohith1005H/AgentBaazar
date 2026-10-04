@@ -133,16 +133,16 @@ async function reconcile(e: WebhookEvent): Promise<string | undefined> {
 		}
 		case "PAYMENT.AUTHORIZATION.VOIDED": {
 			// Voided outside our cancel flow (dashboard, or the authorization expired): put stock back once.
-			return db().transaction(async (tx) => {
+			const store = await db().transaction(async (tx) => {
 				const [o] = await tx
 					.update(orders)
 					.set({ status: "VOIDED" })
 					.where(and(eq(orders.paypalOrderId, orderId ?? ""), eq(orders.status, "AUTHORIZED")))
 					.returning();
-				if (!o) return storeOfPayPalOrder(orderId);
-				await releaseOrderHoldings(tx, o);
-				return o.merchantId;
+				if (o) await releaseOrderHoldings(tx, o);
+				return o?.merchantId;
 			});
+			return store ?? storeOfPayPalOrder(orderId);
 		}
 		case "PAYMENT.CAPTURE.COMPLETED": {
 			// Captured outside our ship flow (e.g. from the PayPal dashboard).

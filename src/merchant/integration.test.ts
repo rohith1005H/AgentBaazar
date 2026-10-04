@@ -280,9 +280,12 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		expect(e.body.name).toBe("CART_CHANGED_DURING_CHECKOUT");
 		expect(fake.voided).toEqual([fake.authorizationOf(token)]);
 		expect(await stock(INDIGO)).toBe(5);
-		// the voided PayPal order is detached; the next PUT issues a fresh one to approve
+		// the voided PayPal order is detached and the cart says it needs approval; a PUT issues a fresh order
 		const m = await merchant();
-		expect(((await svc.getCart(m, cart.id!, caller)).body as PayPalCart).payment_method).toEqual({ type: "paypal" });
+		const detached = (await svc.getCart(m, cart.id!, caller)).body as PayPalCart;
+		expect(detached.payment_method).toEqual({ type: "paypal" });
+		expect(detached.status).toBe("INCOMPLETE");
+		expect(detached.validation_issues?.[0]).toMatchObject({ code: "PAYMENT_ERROR" });
 		const put = await svc.updateCart(m, cart.id!, { items: [{ variant_id: INDIGO, quantity: 2 }], ...buyer }, caller);
 		const fresh = (put.body as PayPalCart).payment_method!.token;
 		expect(fresh).toBeTruthy();
@@ -421,6 +424,22 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		expect(fake.voided).toEqual([fake.authorizationOf(token)]);
 	});
 
+	it("a charge that cannot be voided is left on record for the merchant", async () => {
+		const { cart, token } = await readyCart();
+		fake.approve(token);
+		fake.next.voidFails = true;
+		fake.next.charge = { kind: "amount", amountCents: 100 };
+		await expect(checkout(cart.id!, token)).rejects.toThrow();
+		const trail = await db().select().from(s.cartEvents).where(eq(s.cartEvents.cartId, cart.id!));
+		expect(trail.map((e) => e.data)).toContainEqual(
+			expect.objectContaining({
+				undo_failed: expect.objectContaining({ authorization_id: fake.authorizationOf(token) }),
+			}),
+		);
+		// the reservation is still there, so a retry resumes and finishes the job
+		expect((await ordersFor(token))[0].status).toBe("PENDING");
+	});
+
 	it("GET shows READY, and the payer once PayPal reports the approval", async () => {
 		const { cart, token } = await readyCart();
 		const m = await merchant();
@@ -439,6 +458,46 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		const e = await failure(checkout(cart.id!, token));
 		expect(e.status).toBe(422);
 		expect(e.body.business_context).toMatchObject({ code: "INVENTORY_ISSUE" });
+	});
+
+	describe("a store that captures at checkout (the Store Sync default)", () => {
+		beforeAll(async () => {
+			await db().update(s.merchants).set({ paymentMode: "capture" }).where(eq(s.merchants.id, M));
+		});
+		afterAll(async () => {
+			await db().update(s.merchants).set({ paymentMode: "authorize" }).where(eq(s.merchants.id, M));
+		});
+
+		it("captures at checkout; replay is idempotent", async () => {
+			const { cart, token } = await readyCart();
+			fake.approve(token);
+			const done = (await checkout(cart.id!, token)).body as PayPalCart;
+			expect(done.status).toBe("COMPLETED");
+			const [order] = await ordersFor(token);
+			expect(order).toMatchObject({ status: "CAPTURED", authorizationId: null });
+			expect(order.captureId).toBe(fake.orders.get(token)!.captureId);
+			expect(await checkout(cart.id!, token).then((r) => r.body)).toEqual(done);
+			expect(fake.charges).toBe(1);
+		});
+
+		it("a PENDING capture is recorded as CAPTURE_PENDING", async () => {
+			const { cart, token } = await readyCart();
+			fake.approve(token);
+			fake.next.charge = { kind: "status", status: "PENDING" };
+			await checkout(cart.id!, token);
+			expect((await ordersFor(token))[0].status).toBe("CAPTURE_PENDING");
+		});
+
+		it("a capture for the wrong amount is refunded in full and the reservation released", async () => {
+			const { cart, token } = await readyCart();
+			fake.approve(token);
+			fake.next.charge = { kind: "amount", amountCents: 100 };
+			const e = await failure(checkout(cart.id!, token));
+			expect(e.status).toBe(409);
+			expect(fake.refunded).toEqual([{ captureId: fake.orders.get(token)!.captureId, amountCents: undefined }]);
+			expect(fake.voided).toEqual([]);
+			expect(await stock(INDIGO)).toBe(5);
+		});
 	});
 
 	describe("ship / cancel / refund", () => {
@@ -506,6 +565,10 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 
 			const rest = await ful.refundOrder(M, orderId, { request_id: "refund-two" });
 			expect(rest.body).toMatchObject({ status: "REFUNDED" });
+			// a retry after a lost response returns the refund it made, not "nothing left to refund"
+			const restAgain = await ful.refundOrder(M, orderId, { request_id: "refund-two" });
+			expect((restAgain.body as { refund_id: string }).refund_id).toBe((rest.body as { refund_id: string }).refund_id);
+			expect(fake.refunded).toHaveLength(2);
 			expect((await failure(ful.refundOrder(M, orderId, { ...five, request_id: "refund-three" }))).status).toBe(422);
 		});
 	});

@@ -156,6 +156,16 @@ const RefundBody = z.object({
 export async function refundOrder(store: string, orderId: string, body: unknown): Promise<ApiResult> {
 	const req = RefundBody.parse(body ?? {});
 	const { m, o, creds } = await load(store, orderId);
+	// A retry of a refund we already recorded (e.g. its response was lost) returns that refund.
+	const [prior] = await db()
+		.select()
+		.from(refunds)
+		.where(and(eq(refunds.orderId, o.id), eq(refunds.requestId, req.request_id)));
+	if (prior)
+		return {
+			status: 200,
+			body: { order_id: o.id, status: o.status, refund_id: prior.id, refunded: toMoney(prior.amountCents) },
+		};
 	if (o.status !== "CAPTURED" && o.status !== "PARTIALLY_REFUNDED")
 		throw unprocessable(`Order is ${o.status}; only captured orders can be refunded`);
 
@@ -175,7 +185,7 @@ export async function refundOrder(store: string, orderId: string, body: unknown)
 		note: req.reason,
 	});
 	const status = await db().transaction((tx) =>
-		repo.recordRefund(tx, o, { id: r.refundId, amountCents: amount, reason: req.reason }),
+		repo.recordRefund(tx, o, { id: r.refundId, amountCents: amount, reason: req.reason, requestId: req.request_id }),
 	);
 	publish({ type: "order", store: m.id, orderId: o.id, status, totalCents: o.totalCents });
 	return { status: 200, body: { order_id: o.id, status, refund_id: r.refundId, refunded: toMoney(amount) } };

@@ -2,7 +2,7 @@
 import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { CheckoutFieldType } from "@/src/cart-spec/schema";
 import { decrypt } from "@/src/crypto";
-import { db, type Tx } from "@/src/db/client";
+import { type Db, db, type Tx } from "@/src/db/client";
 import {
 	carts,
 	coupons,
@@ -172,19 +172,21 @@ export async function releaseOrderHoldings(tx: Tx, order: Pick<OrderRow, "id" | 
 export async function recordRefund(
 	tx: Tx,
 	order: Pick<OrderRow, "id" | "captureId" | "totalCents">,
-	refund: { id: string; amountCents: number; reason?: string },
+	refund: { id: string; amountCents: number; reason?: string; requestId?: string },
 ): Promise<"REFUNDED" | "PARTIALLY_REFUNDED"> {
-	await tx
-		.insert(refunds)
-		.values({
-			id: refund.id,
-			orderId: order.id,
-			captureId: order.captureId!,
-			paypalRefundId: refund.id,
-			amountCents: refund.amountCents,
-			reason: refund.reason,
-		})
-		.onConflictDoNothing();
+	const insert = tx.insert(refunds).values({
+		id: refund.id,
+		orderId: order.id,
+		captureId: order.captureId!,
+		paypalRefundId: refund.id,
+		amountCents: refund.amountCents,
+		reason: refund.reason,
+		requestId: refund.requestId,
+	});
+	// The webhook may have recorded this refund first; keep its row but attach our request id.
+	await (refund.requestId
+		? insert.onConflictDoUpdate({ target: refunds.id, set: { requestId: refund.requestId } })
+		: insert.onConflictDoNothing());
 	const [{ total }] = await tx
 		.select({ total: sql<number>`coalesce(sum(${refunds.amountCents}), 0)::int` })
 		.from(refunds)
@@ -213,7 +215,8 @@ export async function takeChargeLease(orderId: string, ms: number): Promise<bool
 	return r.length === 1;
 }
 
-export async function orderForPayPalOrder(paypalOrderId: string): Promise<OrderRow | undefined> {
-	const [o] = await db().select().from(orders).where(eq(orders.paypalOrderId, paypalOrderId));
+/** Pass the transaction when inside one, so the lookup does not take a second pooled connection. */
+export async function orderForPayPalOrder(paypalOrderId: string, q: Db | Tx = db()): Promise<OrderRow | undefined> {
+	const [o] = await q.select().from(orders).where(eq(orders.paypalOrderId, paypalOrderId));
 	return o;
 }
