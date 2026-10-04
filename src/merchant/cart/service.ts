@@ -536,7 +536,7 @@ async function detachPayPalOrder(cartId: string, token: string, snapshot: PayPal
 				field: "payment_method",
 				message: "The PayPal order was voided because it no longer matched the cart",
 				user_message: "Please approve the payment again.",
-				context: { specific_issue: "PAYMENT_APPROVAL_EXPIRED" },
+				context: { specific_issue: "PAYMENT_EXPIRED" },
 				resolution_options: [
 					{
 						action: "REQUEST_APPROVAL",

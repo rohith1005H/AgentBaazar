@@ -306,7 +306,7 @@ export async function reauthorize(
 	return { authorizationId: a.id!, status: a.status ?? "UNKNOWN", amountCents: cents(a.amount?.value) };
 }
 
-export type RefundResult = { refundId: string; status: string };
+export type RefundResult = { refundId: string; status: string; amountCents: number };
 
 export async function refundCapture(
 	creds: PayPalCreds,
@@ -326,7 +326,7 @@ export async function refundCapture(
 			},
 		}),
 	);
-	return { refundId: r.id!, status: r.status ?? "COMPLETED" };
+	return { refundId: r.id!, status: r.status ?? "COMPLETED", amountCents: cents(r.amount?.value) };
 }
 
 // ---- tracking -----------------------------------------------------------

@@ -38,7 +38,8 @@ export const fake = {
 	orders: new Map<string, FakeOrder>(),
 	byRequestId: new Map<string, unknown>(),
 	voided: [] as string[],
-	refunded: [] as { captureId: string; amountCents?: number }[],
+	/** amountCents as requested (undefined = the rest); cents = what was refunded */
+	refunded: [] as { captureId: string; amountCents?: number; cents: number }[],
 	charges: 0,
 	next: {
 		charge: undefined as ChargeBehaviour | undefined,
@@ -165,8 +166,16 @@ export async function refundCapture(
 	opts: { amountCents?: number } = {},
 ) {
 	return idempotent(requestId, () => {
-		fake.refunded.push({ captureId, amountCents: opts.amountCents });
-		return { refundId: `REF-${fake.refunded.length}`, status: "COMPLETED" };
+		const o = [...fake.orders.values()].find((x) => x.captureId === captureId);
+		const captured = o?.chargedCents ?? o?.amountCents ?? 0;
+		const left = captured - fake.refunded.filter((r) => r.captureId === captureId).reduce((n, r) => n + r.cents, 0);
+		const cents = opts.amountCents ?? left;
+		if (cents <= 0 || cents > left)
+			throw new PayPalError(422, "UNPROCESSABLE_ENTITY", "refund exceeds capture", "dbg-4", [
+				{ issue: "REFUND_AMOUNT_EXCEEDED" },
+			]);
+		fake.refunded.push({ captureId, amountCents: opts.amountCents, cents });
+		return { refundId: `REF-${RUN}-${++nextId}`, status: "COMPLETED", amountCents: cents };
 	});
 }
 

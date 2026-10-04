@@ -166,7 +166,7 @@ export async function refundOrder(store: string, orderId: string, body: unknown)
 			status: 200,
 			body: { order_id: o.id, status: o.status, refund_id: prior.id, refunded: toMoney(prior.amountCents) },
 		};
-	if (o.status !== "CAPTURED" && o.status !== "PARTIALLY_REFUNDED")
+	if (!["CAPTURED", "PARTIALLY_REFUNDED", "REFUNDED"].includes(o.status))
 		throw unprocessable(`Order is ${o.status}; only captured orders can be refunded`);
 
 	const [{ refunded }] = await db()
@@ -175,20 +175,34 @@ export async function refundOrder(store: string, orderId: string, body: unknown)
 		.where(eq(refunds.orderId, o.id));
 	const remaining = o.totalCents - refunded;
 	const amount = req.amount ? toCents(req.amount.value) : remaining;
-	if (amount <= 0 || amount > remaining)
-		throw unprocessable(`Refund must be between 0.01 and ${(remaining / 100).toFixed(2)}`);
-
-	// PayPal itself refuses to refund more than is left on the capture, so concurrent
-	// refunds cannot over-refund; the status below is derived from what was recorded.
-	const r = await paypal.refundCapture(creds, o.captureId!, stableRequestId(`${o.id}-refund-${req.request_id}`), {
-		amountCents: amount,
-		note: req.reason,
-	});
+	const outOfRange = () => unprocessable(`Refund must be between 0.01 and ${(remaining / 100).toFixed(2)}`);
+	if (req.amount && amount <= 0) throw outOfRange();
+	// Our records can only lag PayPal (a refund's webhook may land before our own write), so
+	// when they leave no room this may be a retry of a refund already made: ask PayPal anyway
+	// with the same request id. It returns the original refund for a known id and refuses an
+	// over-refund for a new one. Concurrent refunds cannot over-refund for the same reason.
+	const fits = amount > 0 && amount <= remaining;
+	let r: Awaited<ReturnType<typeof paypal.refundCapture>>;
+	try {
+		r = await paypal.refundCapture(creds, o.captureId!, stableRequestId(`${o.id}-refund-${req.request_id}`), {
+			amountCents: fits || req.amount ? amount : undefined,
+			note: req.reason,
+		});
+	} catch (e) {
+		if (!fits && e instanceof PayPalError && e.status === 422) throw outOfRange();
+		throw e;
+	}
+	const refundedCents = r.amountCents >= 0 ? r.amountCents : amount;
 	const status = await db().transaction((tx) =>
-		repo.recordRefund(tx, o, { id: r.refundId, amountCents: amount, reason: req.reason, requestId: req.request_id }),
+		repo.recordRefund(tx, o, {
+			id: r.refundId,
+			amountCents: refundedCents,
+			reason: req.reason,
+			requestId: req.request_id,
+		}),
 	);
 	publish({ type: "order", store: m.id, orderId: o.id, status, totalCents: o.totalCents });
-	return { status: 200, body: { order_id: o.id, status, refund_id: r.refundId, refunded: toMoney(amount) } };
+	return { status: 200, body: { order_id: o.id, status, refund_id: r.refundId, refunded: toMoney(refundedCents) } };
 }
 
 export type { OrderRow };

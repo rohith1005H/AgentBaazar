@@ -52,7 +52,8 @@ describe.skipIf(!TEST_DB)("cart service (Postgres + fake PayPal)", async () => {
 	process.env.WEBHOOK_VERIFY = "skip";
 	process.env.LOG_LEVEL = "silent";
 
-	const { fake } = await import("@/src/test/fake-paypal");
+	const { fake, refundCapture } = await import("@/src/test/fake-paypal");
+	const { stableRequestId } = await import("@/src/crypto");
 	const { closeDb, db } = await import("@/src/db/client");
 	const s = await import("@/src/db/schema");
 	const { importFeed } = await import("@/src/merchant/catalog/import");
@@ -494,7 +495,9 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 			fake.next.charge = { kind: "amount", amountCents: 100 };
 			const e = await failure(checkout(cart.id!, token));
 			expect(e.status).toBe(409);
-			expect(fake.refunded).toEqual([{ captureId: fake.orders.get(token)!.captureId, amountCents: undefined }]);
+			expect(fake.refunded).toEqual([
+				expect.objectContaining({ captureId: fake.orders.get(token)!.captureId, amountCents: undefined }),
+			]);
 			expect(fake.voided).toEqual([]);
 			expect(await stock(INDIGO)).toBe(5);
 		});
@@ -592,6 +595,28 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 			expect((await orderRow(orderId)).status).toBe("PARTIALLY_REFUNDED");
 			const rows = await db().select().from(s.refunds).where(eq(s.refunds.orderId, orderId));
 			expect(rows.map((r) => r.amountCents)).toEqual([1000]);
+		});
+
+		it("a refund retry still returns the original refund when its webhook was recorded first", async () => {
+			const { orderId } = await paidOrder();
+			await ful.shipOrder(M, orderId, { carrier: "UPS", tracking_number: "1Z999AA6" });
+			const order = await orderRow(orderId);
+			// the admin's "refund the rest" reaches PayPal, but its response is lost...
+			const made = await refundCapture(null, order.captureId!, stableRequestId(`${orderId}-refund-lost-one`), {
+				amountCents: order.totalCents,
+			});
+			// ...and PayPal's webhook records the refund before the admin retries
+			await deliver(
+				"PAYMENT.CAPTURE.REFUNDED",
+				refundedEvent(order.captureId!, made.refundId, (order.totalCents / 100).toFixed(2)),
+			);
+			expect((await orderRow(orderId)).status).toBe("REFUNDED");
+
+			const retried = await ful.refundOrder(M, orderId, { request_id: "lost-one" });
+			expect(retried.body).toMatchObject({ status: "REFUNDED", refund_id: made.refundId });
+			expect(fake.refunded).toHaveLength(1);
+			// a genuinely new refund on a fully refunded order is still refused
+			expect((await failure(ful.refundOrder(M, orderId, { request_id: "another-one" }))).status).toBe(422);
 		});
 
 		it("an event whose processing failed half way is applied when PayPal redelivers it", async () => {
