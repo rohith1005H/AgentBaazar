@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { closeDb } from "@/src/db/client";
 import { getMerchant } from "@/src/merchant/cart/repo";
 import { importFeed } from "@/src/merchant/catalog/import";
+import { publicUrl } from "@/src/public-url";
 
 const [store, file] = process.argv.slice(2);
 if (!store || !file) {
@@ -19,7 +20,7 @@ if (!store || !file) {
 async function main() {
 	if (!(await getMerchant(store)))
 		throw new Error(`store '${store}' does not exist (run pnpm seed, or create the merchant first)`);
-	const report = await importFeed(store, readFileSync(file, "utf8"), process.env.PUBLIC_URL ?? "http://localhost:3000");
+	const report = await importFeed(store, readFileSync(file, "utf8"), publicUrl());
 	console.log(`${report.format}: ${report.products} products, ${report.variants} variants`);
 	for (const s of report.skipped) console.log(`  skipped ${s.id ?? `row ${s.row}`}: ${s.reason}`);
 }

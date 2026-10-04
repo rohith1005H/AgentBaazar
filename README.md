@@ -160,6 +160,12 @@ PayPal credentials: developer.paypal.com → Apps & Credentials → Sandbox → 
 
 Webhooks need a public HTTPS URL. Expose the dev server (for example `cloudflared tunnel --url http://localhost:3000`), set `PUBLIC_URL` to the tunnel URL, run `pnpm register-webhook --url https://<tunnel>/api/paypal/webhooks`, and put the printed id in `PAYPAL_WEBHOOK_ID`. When the tunnel URL changes, run it again: it moves the same webhook to the new URL.
 
+### Deploy (free, no card)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/rohith1005H/AgentBaazar)
+
+[`render.yaml`](render.yaml) describes one free Render web service in Ohio, next to a Neon database in `us-east-2`. After it is created, add the secrets in the service's Environment tab: `DATABASE_URL`, `APP_SECRET`, `STORE_ADMIN_TOKEN`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PUBLIC_URL` (the `onrender.com` URL), `AGENTIC_JWKS_URL` (`<PUBLIC_URL>/.well-known/jwks.json`) and `JWT_ISSUER` (`PUBLIC_URL`). Then run `pnpm seed` and `pnpm register-webhook --url <PUBLIC_URL>/api/paypal/webhooks` locally with `PUBLIC_URL` pointing at the deployment. Free instances sleep after 15 idle minutes; a free uptime monitor hitting `/api/health` keeps the demo awake.
+
 ### Demo stores
 
 | Store | Feed format | What it exercises |
@@ -230,7 +236,7 @@ demo-data/                   three demo stores and their feeds
 - [ ] Buyer agent (Gemini, free tier) that shops any AgentBaazar store through the Cart API
 - [ ] Merchant console: live agent carts and orders, ship/refund
 - [ ] Merchant MCP server
-- [ ] Hosted demo
+- [ ] Hosted demo (Render Blueprint ready: `render.yaml`)
 
 ## Stack
 

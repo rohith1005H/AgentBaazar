@@ -27,6 +27,7 @@ import {
 } from "@/src/db/schema";
 import { importFeed } from "@/src/merchant/catalog/import";
 import { activeSigningKey } from "@/src/platform/stores/keys";
+import { publicUrl } from "@/src/public-url";
 
 type StoreFile = {
 	id: string;
@@ -37,7 +38,7 @@ type StoreFile = {
 };
 
 const DIR = join(process.cwd(), "demo-data");
-const publicUrl = process.env.PUBLIC_URL ?? "http://localhost:3000";
+const base = publicUrl();
 
 async function main() {
 	const files = readdirSync(join(DIR, "stores")).filter((f) => f.endsWith(".json"));
@@ -54,13 +55,13 @@ async function main() {
 				target: merchants.id,
 				set: { name: d.name, paymentMode: d.paymentMode, policy: d.policy },
 			});
-		const report = await importFeed(d.id, readFileSync(join(DIR, "feeds", d.feed), "utf8"), publicUrl);
+		const report = await importFeed(d.id, readFileSync(join(DIR, "feeds", d.feed), "utf8"), base);
 		await db()
 			.insert(stores)
-			.values({ id: d.id, name: d.name, baseUrl: `${publicUrl}/api/stores/${d.id}/paypal/v1`, merchantId: d.id })
+			.values({ id: d.id, name: d.name, baseUrl: `${base}/api/stores/${d.id}/paypal/v1`, merchantId: d.id })
 			.onConflictDoUpdate({
 				target: stores.id,
-				set: { name: d.name, baseUrl: `${publicUrl}/api/stores/${d.id}/paypal/v1`, merchantId: d.id, enabled: true },
+				set: { name: d.name, baseUrl: `${base}/api/stores/${d.id}/paypal/v1`, merchantId: d.id, enabled: true },
 			});
 		console.log(
 			`${d.id.padEnd(16)} ${report.format.padEnd(6)} ${report.products} products, ${report.variants} variants` +

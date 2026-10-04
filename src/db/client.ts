@@ -18,8 +18,9 @@ const g = globalThis as unknown as { __abDb?: { db: Db; pool: Pool } };
 function init() {
 	const url = process.env.DATABASE_URL;
 	if (!url) throw new Error("DATABASE_URL is not set");
-	// connectionTimeoutMillis: an exhausted pool fails the request instead of hanging it
-	const pool = new Pool({ connectionString: url, max: 5, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 10_000 });
+	// connectionTimeoutMillis: an exhausted pool (or unreachable database) fails the request
+	// instead of hanging it; 30 s leaves room for a Neon compute waking from scale-to-zero.
+	const pool = new Pool({ connectionString: url, max: 5, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 30_000 });
 	return { db: drizzle({ client: pool, schema, casing: "snake_case" }), pool };
 }
 

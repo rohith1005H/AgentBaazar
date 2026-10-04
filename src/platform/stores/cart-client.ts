@@ -6,14 +6,16 @@
  *
  * Never throws on 4xx: agents need to read validation issues and errors.
  */
+
 import type { ApiError, CartRequest, CheckoutRequest, PayPalCart } from "@/src/cart-spec/schema";
+import { publicUrl } from "@/src/public-url";
 import { signCartJwt } from "./jwt-sign";
 import { activeSigningKey } from "./keys";
 
 export type StoreRef = { id: string; baseUrl: string; merchantId: string };
 export type Reply<T> = { status: number; ok: boolean; body: T | ApiError };
 
-const issuer = () => process.env.JWT_ISSUER || process.env.PUBLIC_URL || "http://localhost:3000";
+const issuer = () => process.env.JWT_ISSUER || publicUrl();
 
 export function cartClient(store: StoreRef) {
 	// `baseUrl` is the store's Cart API root, e.g. https://host/api/stores/{store}/paypal/v1;

@@ -11,6 +11,7 @@
  *   7. replay checkout                   -> same response (idempotent)
  *   8. ship                              -> authorization captured, tracking posted
  *   9. order status                      -> CAPTURED with tracking
+ *  10. refund $5 twice, one request_id   -> one PayPal refund, order PARTIALLY_REFUNDED
  *
  *   pnpm smoke [--payer PAYER_ID] [--no-ship]
  */
@@ -149,6 +150,22 @@ async function main() {
 		status.status === "CAPTURED" && status.shipments.length === 1,
 		`order status: ${status.status}, tracking ${status.shipments[0]?.tracking_number}`,
 	);
+
+	// 10. partial refund, sent twice with one request_id: PayPal refunds once
+	const refund = () =>
+		fetch(`${base}/orders/${orderNo}/refund`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${process.env.STORE_ADMIN_TOKEN}`, "Content-Type": "application/json" },
+			body: JSON.stringify({
+				amount: { currency_code: "USD", value: "5.00" },
+				reason: "Smoke test partial refund",
+				request_id: `smoke-${orderNo}-refund`,
+			}),
+		}).then((r) => r.json() as Promise<{ status?: string; refund_id?: string }>);
+	const first = await refund();
+	const retried = await refund();
+	ok(first.status === "PARTIALLY_REFUNDED", `refund $5.00: ${first.refund_id}, order PARTIALLY_REFUNDED`);
+	ok(retried.refund_id === first.refund_id, "refund retried with the same request_id: same refund, no double refund");
 	console.log("\nSmoke passed.");
 }
 
@@ -167,7 +184,8 @@ async function waitForApproval(token: string): Promise<string> {
 
 main()
 	.catch((e) => {
-		console.error(e instanceof Error ? e.message : e);
+		const cause = (e as { cause?: { message?: string } }).cause?.message;
+		console.error(e instanceof Error ? e.message : e, cause ? `\n  cause: ${cause}` : "");
 		process.exitCode = 1;
 	})
 	.finally(closeDb);

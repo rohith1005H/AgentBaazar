@@ -45,12 +45,11 @@ import { type ApiResult, badRequest, HttpError, unprocessable } from "@/src/merc
 import type { CartCaller } from "@/src/merchant/auth/jwt-verify";
 import { type PayPalCreds, PayPalError } from "@/src/merchant/paypal/http";
 import * as paypal from "@/src/merchant/paypal/orders";
+import { publicUrl } from "@/src/public-url";
 import { type Evaluation, evaluateCart } from "./engine";
 import { toCents } from "./money";
 import * as repo from "./repo";
 import type { CatalogVariant } from "./types";
-
-const publicUrl = () => process.env.PUBLIC_URL ?? "http://localhost:3000";
 
 type PaymentState = { orderId: string; approvalUrl?: string; amountCents: number };
 

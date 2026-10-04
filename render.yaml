@@ -1,0 +1,21 @@
+# Render Blueprint: one free web service in Ohio, next to the Neon database (us-east-2).
+# Secrets are not listed here; set them on the service (Environment tab, or the Render API):
+#   DATABASE_URL APP_SECRET STORE_ADMIN_TOKEN PAYPAL_CLIENT_ID PAYPAL_CLIENT_SECRET
+#   PAYPAL_WEBHOOK_ID PUBLIC_URL AGENTIC_JWKS_URL JWT_ISSUER     (see .env.example)
+services:
+  - type: web
+    name: agentbaazar
+    runtime: node
+    plan: free
+    region: ohio
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: WEBHOOK_VERIFY
+        value: strict
+      - key: LOG_LEVEL
+        value: info
