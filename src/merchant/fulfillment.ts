@@ -175,8 +175,7 @@ export async function refundOrder(store: string, orderId: string, body: unknown)
 		.where(eq(refunds.orderId, o.id));
 	const remaining = o.totalCents - refunded;
 	const amount = req.amount ? toCents(req.amount.value) : remaining;
-	const outOfRange = () => unprocessable(`Refund must be between 0.01 and ${(remaining / 100).toFixed(2)}`);
-	if (req.amount && amount <= 0) throw outOfRange();
+	if (req.amount && amount <= 0) throw unprocessable("Refund amount must be at least 0.01");
 	// Our records can only lag PayPal (a refund's webhook may land before our own write), so
 	// when they leave no room this may be a retry of a refund already made: ask PayPal anyway
 	// with the same request id. It returns the original refund for a known id and refuses an
@@ -189,7 +188,13 @@ export async function refundOrder(store: string, orderId: string, body: unknown)
 			note: req.reason,
 		});
 	} catch (e) {
-		if (!fits && e instanceof PayPalError && e.status === 422) throw outOfRange();
+		// PayPal refused (already refunded, over the capture, past the refund window...): a 422
+		// with PayPal's reason, not a 502 that reads like an outage.
+		if (e instanceof PayPalError && e.status < 500)
+			throw unprocessable(
+				`PayPal refused the refund${fits ? "" : `; at most ${(remaining / 100).toFixed(2)} is left`}`,
+				[{ field: "amount", issue: e.issue ?? e.name, description: `PayPal debug_id ${e.debugId ?? "n/a"}` }],
+			);
 		throw e;
 	}
 	const refundedCents = r.amountCents >= 0 ? r.amountCents : amount;

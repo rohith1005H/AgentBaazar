@@ -616,7 +616,9 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 			expect(retried.body).toMatchObject({ status: "REFUNDED", refund_id: made.refundId });
 			expect(fake.refunded).toHaveLength(1);
 			// a genuinely new refund on a fully refunded order is still refused
-			expect((await failure(ful.refundOrder(M, orderId, { request_id: "another-one" }))).status).toBe(422);
+			const refused = await failure(ful.refundOrder(M, orderId, { request_id: "another-one" }));
+			expect(refused.status).toBe(422);
+			expect(refused.body.details?.[0].issue).toBe("REFUND_AMOUNT_EXCEEDED");
 		});
 
 		it("an event whose processing failed half way is applied when PayPal redelivers it", async () => {
