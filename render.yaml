@@ -8,8 +8,10 @@ services:
     runtime: node
     plan: free
     region: ohio
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
-    startCommand: pnpm start
+    # Render's image has its own read-only pnpm (so no `corepack enable`); run the project's
+    # pnpm through npx (keep the version in sync with package.json "packageManager").
+    buildCommand: npx -y pnpm@11.25.0 install --frozen-lockfile && npx -y pnpm@11.25.0 build
+    startCommand: node_modules/.bin/next start
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     envVars:
