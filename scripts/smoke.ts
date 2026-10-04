@@ -166,7 +166,7 @@ async function main() {
 	const retried = await refund();
 	ok(first.status === "PARTIALLY_REFUNDED", `refund $5.00: ${first.refund_id}, order PARTIALLY_REFUNDED`);
 	ok(retried.refund_id === first.refund_id, "refund retried with the same request_id: same refund, no double refund");
-	console.log("\nSmoke passed.");
+	console.log(`\nSmoke passed.\n\nThe buyer's order page:\n  ${done.payment_confirmation?.order_review_page}`);
 }
 
 async function waitForApproval(token: string): Promise<string> {
