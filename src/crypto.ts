@@ -2,7 +2,7 @@
  * AES-256-GCM for secrets we must store (per-merchant PayPal secrets, platform
  * signing keys). Key = APP_SECRET (32 bytes, hex). Format: base64(iv|tag|ciphertext).
  */
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 function key(): Buffer {
 	const hex = process.env.APP_SECRET;
@@ -35,4 +35,13 @@ export function verifyLink(value: string, sig: string | null | undefined): boole
 	const want = Buffer.from(signLink(value));
 	const got = Buffer.from(sig);
 	return want.length === got.length && timingSafeEqual(want, got);
+}
+
+/**
+ * A UUID-shaped PayPal-Request-Id derived from a key (e.g. "CART-...-authorize"): the same
+ * operation always sends the same id, and it stays within PayPal's length limits.
+ */
+export function stableRequestId(key: string): string {
+	const h = createHash("sha256").update(key).digest("hex");
+	return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }

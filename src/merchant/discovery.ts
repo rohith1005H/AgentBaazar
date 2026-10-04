@@ -56,7 +56,7 @@ export async function searchCatalog(store: string, params: URLSearchParams): Pro
 		.split(/[^a-z0-9]+/)
 		.filter((t) => t.length > 1 && !STOP.has(t));
 	const maxPrice = rawMax ? toCents(rawMax) : undefined;
-	const limit = Math.min(Number(params.get("limit") ?? 10) || 10, 25);
+	const limit = Math.min(Math.max(Math.trunc(Number(params.get("limit") ?? 10)) || 10, 1), 25);
 
 	const rows = await db()
 		.select({ v: variants, p: products })

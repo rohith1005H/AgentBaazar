@@ -1,12 +1,12 @@
 /**
- * Cart service against a real Postgres (a Neon branch, TEST_DATABASE_URL) with an
- * in-memory PayPal. Covers the money-moving paths: checkout, idempotent replay,
- * declines, PayPal answers that do not match what we expected, lost responses,
- * and a cart edited while it is being paid for.
+ * The merchant side against a real Postgres (a Neon branch, TEST_DATABASE_URL) with an
+ * in-memory PayPal. Covers every money-moving path: checkout (idempotent replay, declines,
+ * PayPal answers that do not match what we expected, lost responses, carts edited while
+ * being paid for), ship / cancel / refund, and webhook reconciliation.
  *
  * Skipped when TEST_DATABASE_URL is not set.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PayPalCart } from "@/src/cart-spec/schema";
 import { HttpError } from "@/src/merchant/api/http";
@@ -48,15 +48,18 @@ describe.skipIf(!TEST_DB)("cart service (Postgres + fake PayPal)", async () => {
 	process.env.PAYPAL_CLIENT_SECRET = "test-secret";
 	process.env.APP_SECRET = "a".repeat(64);
 	process.env.PUBLIC_URL = "https://shop.test";
-	process.env.CHECKOUT_STALE_MS = "0";
+	process.env.CHECKOUT_LEASE_MS = "0";
+	process.env.WEBHOOK_VERIFY = "skip";
 	process.env.LOG_LEVEL = "silent";
 
 	const { fake } = await import("@/src/test/fake-paypal");
 	const { closeDb, db } = await import("@/src/db/client");
 	const s = await import("@/src/db/schema");
 	const { importFeed } = await import("@/src/merchant/catalog/import");
-	const svc = await import("./service");
-	const repo = await import("./repo");
+	const svc = await import("./cart/service");
+	const repo = await import("./cart/repo");
+	const ful = await import("./fulfillment");
+	const { handleWebhook } = await import("./webhooks");
 
 	const merchant = () => repo.getMerchant(M).then((m) => m!);
 	const stock = async (id: string) => (await db().select().from(s.variants).where(eq(s.variants.id, id)))[0].stockQty;
@@ -78,6 +81,30 @@ describe.skipIf(!TEST_DB)("cart service (Postgres + fake PayPal)", async () => {
 			{ payment_method: { type: "PAYPAL", token, payer_id: "PAYER-TEST" } },
 			caller,
 		);
+	const orderRow = async (id: string) => (await db().select().from(s.orders).where(eq(s.orders.id, id)))[0];
+	const couponUsed = async () =>
+		(
+			await db()
+				.select()
+				.from(s.coupons)
+				.where(and(eq(s.coupons.merchantId, M), eq(s.coupons.code, "TEST10")))
+		)[0].used;
+	/** A checked-out (AUTHORIZED) order. */
+	async function paidOrder(coupons?: { code: string; action: "APPLY" }[]) {
+		const { cart, token } = await readyCart([{ variant_id: INDIGO, quantity: 2 }], coupons);
+		fake.approve(token);
+		const done = (await checkout(cart.id!, token)).body as PayPalCart;
+		return { cart, token, orderId: done.payment_confirmation!.merchant_order_number };
+	}
+	let events = 0;
+	/** Deliver a PayPal webhook (signature checks are off in this suite: WEBHOOK_VERIFY=skip). */
+	const deliver = (event_type: string, resource: Record<string, unknown>, id = `WH-${M}-${++events}`) =>
+		handleWebhook(
+			new Request("https://shop.test/api/paypal/webhooks", {
+				method: "POST",
+				body: JSON.stringify({ id, event_type, resource }),
+			}),
+		).then((r) => ({ id, ...(r.body as { duplicate?: boolean }) }));
 	const failure = async (p: Promise<unknown>) => {
 		try {
 			await p;
@@ -134,6 +161,10 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 	afterAll(async () => {
 		const orderIds = db().select({ id: s.orders.id }).from(s.orders).where(eq(s.orders.merchantId, M));
 		const cartIds = db().select({ id: s.carts.id }).from(s.carts).where(eq(s.carts.merchantId, M));
+		await db()
+			.delete(s.webhookEvents)
+			.where(like(s.webhookEvents.id, `WH-${M}-%`));
+		await db().delete(s.refunds).where(inArray(s.refunds.orderId, orderIds));
 		await db().delete(s.shipments).where(inArray(s.shipments.orderId, orderIds));
 		await db().delete(s.orderItems).where(inArray(s.orderItems.orderId, orderIds));
 		await db().delete(s.orders).where(eq(s.orders.merchantId, M));
@@ -166,6 +197,7 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		);
 		const cart = fixed.body as PayPalCart;
 		expect(cart.validation_status).toBe("VALID");
+		expect(cart.status).toBe("READY");
 		expect(fake.orders.get(cart.payment_method!.token!)?.amountCents).toBe(
 			Number(cart.totals!.total.value.replace(".", "")),
 		);
@@ -195,7 +227,7 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		expect(order).toMatchObject({
 			id: orderNo,
 			status: "AUTHORIZED",
-			authorizationId: "AUTH-1",
+			authorizationId: fake.authorizationOf(token),
 			couponCodes: ["TEST10"],
 		});
 		expect(await stock(INDIGO)).toBe(3);
@@ -246,8 +278,15 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		const e = await failure(checkout(cart.id!, token));
 		expect(e.status).toBe(409);
 		expect(e.body.name).toBe("CART_CHANGED_DURING_CHECKOUT");
-		expect(fake.voided).toEqual(["AUTH-1"]);
+		expect(fake.voided).toEqual([fake.authorizationOf(token)]);
 		expect(await stock(INDIGO)).toBe(5);
+		// the voided PayPal order is detached; the next PUT issues a fresh one to approve
+		const m = await merchant();
+		expect(((await svc.getCart(m, cart.id!, caller)).body as PayPalCart).payment_method).toEqual({ type: "paypal" });
+		const put = await svc.updateCart(m, cart.id!, { items: [{ variant_id: INDIGO, quantity: 2 }], ...buyer }, caller);
+		const fresh = (put.body as PayPalCart).payment_method!.token;
+		expect(fresh).toBeTruthy();
+		expect(fresh).not.toBe(token);
 	});
 
 	it("a cart edit that arrives while PayPal is authorizing is rejected", async () => {
@@ -340,5 +379,173 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		expect(wrongToken.body.details?.[0].issue).toBe("INVALID_TOKEN");
 		expect((await failure(svc.getCart(m, cart.id!, stranger))).status).toBe(404);
 		expect((await failure(svc.getCart(m, "not-a-cart", caller))).status).toBe(400);
+	});
+
+	it("a retry while the first attempt may still be talking to PayPal gets 409, not a second charge", async () => {
+		const { cart, token } = await readyCart();
+		fake.approve(token);
+		fake.next.charge = { kind: "lost-response" };
+		process.env.CHECKOUT_LEASE_MS = "600000";
+		try {
+			expect((await failure(checkout(cart.id!, token))).status).toBe(502);
+			const busy = await failure(checkout(cart.id!, token));
+			expect(busy.status).toBe(409);
+			expect(busy.body.name).toBe("CHECKOUT_IN_PROGRESS");
+		} finally {
+			process.env.CHECKOUT_LEASE_MS = "0";
+		}
+		// once the lease has run out, the retry reads the authorization back from PayPal
+		await db()
+			.update(s.orders)
+			.set({ chargingUntil: new Date(Date.now() - 1000) })
+			.where(eq(s.orders.paypalOrderId, token));
+		expect(((await checkout(cart.id!, token)).body as PayPalCart).status).toBe("COMPLETED");
+		expect(fake.charges).toBe(1);
+	});
+
+	it("if the reservation is released while PayPal is charging, the charge is voided", async () => {
+		const { cart, token } = await readyCart();
+		fake.approve(token);
+		fake.next.charge = {
+			kind: "during",
+			// what a competing attempt's release() leaves behind
+			fn: async () => {
+				const [o] = await ordersFor(token);
+				await db().delete(s.orderItems).where(eq(s.orderItems.orderId, o.id));
+				await db().delete(s.orders).where(eq(s.orders.id, o.id));
+			},
+		};
+		const e = await failure(checkout(cart.id!, token));
+		expect(e.status).toBe(409);
+		expect(e.body.name).toBe("CHECKOUT_CONFLICT");
+		expect(fake.voided).toEqual([fake.authorizationOf(token)]);
+	});
+
+	it("GET shows READY, and the payer once PayPal reports the approval", async () => {
+		const { cart, token } = await readyCart();
+		const m = await merchant();
+		const before = (await svc.getCart(m, cart.id!, caller)).body as PayPalCart;
+		expect(before.status).toBe("READY");
+		expect(before.payment_method?.payer_id).toBeUndefined();
+		await deliver("CHECKOUT.ORDER.APPROVED", { id: token, status: "APPROVED", payer: { payer_id: "PAYER-TEST" } });
+		const after = (await svc.getCart(m, cart.id!, caller)).body as PayPalCart;
+		expect(after.payment_method).toMatchObject({ token, payer_id: "PAYER-TEST" });
+	});
+
+	it("a cart that cannot check out says why in business_context, with the fix", async () => {
+		const { cart, token } = await readyCart([{ variant_id: BEANS, quantity: 3 }]);
+		fake.approve(token);
+		await db().update(s.variants).set({ stockQty: 0 }).where(eq(s.variants.id, BEANS));
+		const e = await failure(checkout(cart.id!, token));
+		expect(e.status).toBe(422);
+		expect(e.body.business_context).toMatchObject({ code: "INVENTORY_ISSUE" });
+	});
+
+	describe("ship / cancel / refund", () => {
+		it("ship captures the authorization and posts tracking; a declined capture changes nothing", async () => {
+			const declined = await paidOrder();
+			fake.next.charge = { kind: "status", status: "DECLINED" };
+			const e = await failure(ful.shipOrder(M, declined.orderId, { carrier: "UPS", tracking_number: "1Z999AA1" }));
+			expect(e.status).toBe(422);
+			expect((await orderRow(declined.orderId)).status).toBe("AUTHORIZED");
+
+			const ok = await paidOrder();
+			const shipped = await ful.shipOrder(M, ok.orderId, { carrier: "UPS", tracking_number: "1Z999AA2" });
+			const captureId = `CAP-${fake.authorizationOf(ok.token)}`;
+			expect(shipped.body).toMatchObject({ status: "CAPTURED", capture_id: captureId, tracking_posted: true });
+			expect(await orderRow(ok.orderId)).toMatchObject({ status: "CAPTURED", captureId });
+
+			// the placing platform can follow the order; nobody else can see it
+			const m = await merchant();
+			expect((await ful.orderStatus(m, ok.orderId, caller)).body).toMatchObject({ status: "CAPTURED" });
+			expect((await failure(ful.orderStatus(m, ok.orderId, stranger))).status).toBe(404);
+		});
+
+		it("cancel voids and hands back stock and coupon once, even when PayPal's VOIDED webhook follows", async () => {
+			const { orderId, token } = await paidOrder([{ code: "TEST10", action: "APPLY" }]);
+			expect(await stock(INDIGO)).toBe(3);
+			expect(await couponUsed()).toBe(1);
+
+			expect((await ful.cancelOrder(M, orderId)).body).toMatchObject({ status: "VOIDED" });
+			expect(fake.voided).toEqual([fake.authorizationOf(token)]);
+			expect(await stock(INDIGO)).toBe(5);
+			expect(await couponUsed()).toBe(0);
+
+			await deliver("PAYMENT.AUTHORIZATION.VOIDED", {
+				id: fake.authorizationOf(token),
+				status: "VOIDED",
+				supplementary_data: { related_ids: { order_id: token } },
+			});
+			expect(await stock(INDIGO)).toBe(5);
+			expect(await couponUsed()).toBe(0);
+		});
+
+		it("an authorization voided in PayPal returns stock and coupon through the webhook", async () => {
+			const { orderId, token } = await paidOrder([{ code: "TEST10", action: "APPLY" }]);
+			await deliver("PAYMENT.AUTHORIZATION.VOIDED", {
+				id: fake.authorizationOf(token),
+				status: "VOIDED",
+				supplementary_data: { related_ids: { order_id: token } },
+			});
+			expect((await orderRow(orderId)).status).toBe("VOIDED");
+			expect(await stock(INDIGO)).toBe(5);
+			expect(await couponUsed()).toBe(0);
+		});
+
+		it("refunds need a request_id; a retried id refunds once; the refunded total drives the status", async () => {
+			const { orderId } = await paidOrder();
+			await ful.shipOrder(M, orderId, { carrier: "UPS", tracking_number: "1Z999AA3" });
+			const five = { amount: { currency_code: "USD", value: "5.00" } };
+
+			await expect(ful.refundOrder(M, orderId, five)).rejects.toThrow();
+			const first = await ful.refundOrder(M, orderId, { ...five, request_id: "refund-one" });
+			expect(first.body).toMatchObject({ status: "PARTIALLY_REFUNDED" });
+			const retried = await ful.refundOrder(M, orderId, { ...five, request_id: "refund-one" });
+			expect((retried.body as { refund_id: string }).refund_id).toBe((first.body as { refund_id: string }).refund_id);
+			expect(fake.refunded).toHaveLength(1);
+
+			const rest = await ful.refundOrder(M, orderId, { request_id: "refund-two" });
+			expect(rest.body).toMatchObject({ status: "REFUNDED" });
+			expect((await failure(ful.refundOrder(M, orderId, { ...five, request_id: "refund-three" }))).status).toBe(422);
+		});
+	});
+
+	describe("webhooks", () => {
+		const refundedEvent = (captureId: string, refundId: string, value: string) => ({
+			id: refundId,
+			status: "COMPLETED",
+			amount: { currency_code: "USD", value },
+			links: [{ rel: "up", href: `https://api.sandbox.paypal.com/v2/payments/captures/${captureId}` }],
+		});
+
+		it("a refund made in the PayPal dashboard is recorded once, however often it is delivered", async () => {
+			const { orderId } = await paidOrder();
+			await ful.shipOrder(M, orderId, { carrier: "UPS", tracking_number: "1Z999AA4" });
+			const { captureId } = await orderRow(orderId);
+
+			const first = await deliver("PAYMENT.CAPTURE.REFUNDED", refundedEvent(captureId!, `${M}-R1`, "10.00"));
+			const again = await deliver("PAYMENT.CAPTURE.REFUNDED", refundedEvent(captureId!, `${M}-R1`, "10.00"), first.id);
+			expect(again.duplicate).toBe(true);
+			expect((await orderRow(orderId)).status).toBe("PARTIALLY_REFUNDED");
+			const rows = await db().select().from(s.refunds).where(eq(s.refunds.orderId, orderId));
+			expect(rows.map((r) => r.amountCents)).toEqual([1000]);
+		});
+
+		it("an event whose processing failed half way is applied when PayPal redelivers it", async () => {
+			const { orderId } = await paidOrder();
+			await ful.shipOrder(M, orderId, { carrier: "UPS", tracking_number: "1Z999AA5" });
+			const { captureId } = await orderRow(orderId);
+			const resource = refundedEvent(captureId!, `${M}-R2`, "3.00");
+			// stored, never processed: what a crash between the insert and reconcile leaves
+			const id = `WH-${M}-crashed`;
+			await db()
+				.insert(s.webhookEvents)
+				.values({ id, eventType: "PAYMENT.CAPTURE.REFUNDED", verified: true, raw: { resource } });
+
+			const redelivered = await deliver("PAYMENT.CAPTURE.REFUNDED", resource, id);
+			expect(redelivered.duplicate).toBeUndefined();
+			expect((await orderRow(orderId)).status).toBe("PARTIALLY_REFUNDED");
+			expect((await deliver("PAYMENT.CAPTURE.REFUNDED", resource, id)).duplicate).toBe(true);
+		});
 	});
 });

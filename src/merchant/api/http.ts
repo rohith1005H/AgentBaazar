@@ -32,8 +32,17 @@ export const badRequest = (message: string, field?: string, issue = "INVALID_REQ
 
 export const notFound = (name: string, message: string) => new HttpError(404, { name, message });
 
-export const unprocessable = (message: string, details: ApiError["details"] = []) =>
-	new HttpError(422, { name: "UNPROCESSABLE_ENTITY", message, details });
+export const unprocessable = (
+	message: string,
+	details: ApiError["details"] = [],
+	businessContext?: ApiError["business_context"],
+) =>
+	new HttpError(422, {
+		name: "UNPROCESSABLE_ENTITY",
+		message,
+		details,
+		...(businessContext && { business_context: businessContext }),
+	});
 
 export type ApiResult = { status: number; body: unknown; headers?: Record<string, string> };
 
@@ -120,7 +129,7 @@ function failure(e: unknown, requestId: string, req: Request): Response {
 			400,
 			{
 				name: "INVALID_REQUEST",
-				message: "Request does not match the Cart API schema",
+				message: "Request body is invalid",
 				debug_id: requestId,
 				details: e.issues.slice(0, 20).map((i) => ({
 					field: i.path

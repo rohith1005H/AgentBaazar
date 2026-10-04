@@ -33,11 +33,15 @@ async function main() {
 		throw new Error("Pass --url https://<public host>/api/paypal/webhooks (PayPal only delivers to HTTPS)");
 	const creds = envCreds();
 	const { data } = await paypal<{ webhooks: Webhook[] }>(creds, "GET", "/v1/notifications/webhooks");
-	const existing = data.webhooks.find((w) => w.url === url);
+	// Reuse our webhook (same id, so PAYPAL_WEBHOOK_ID stays valid) when only the URL changed,
+	// e.g. a new tunnel; PayPal redelivers pending events to the new URL.
+	const existing =
+		data.webhooks.find((w) => w.url === url) ?? data.webhooks.find((w) => w.id === process.env.PAYPAL_WEBHOOK_ID);
 	const event_types = EVENTS.map((name) => ({ name }));
 
 	if (existing) {
 		await paypal(creds, "PATCH", `/v1/notifications/webhooks/${existing.id}`, [
+			{ op: "replace", path: "/url", value: url },
 			{ op: "replace", path: "/event_types", value: event_types },
 		]);
 		console.log(`updated ${existing.id} -> ${url} (${EVENTS.length} events)`);

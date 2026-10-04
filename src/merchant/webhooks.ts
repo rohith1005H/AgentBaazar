@@ -11,14 +11,14 @@
  * PayPal retries non-2xx deliveries for 3 days, so anything we cannot match
  * (e.g. an event for a store order created elsewhere) is acknowledged and kept.
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/src/db/client";
-import { carts, disputes, orderItems, orders, refunds, webhookEvents } from "@/src/db/schema";
+import { carts, disputes, orders, webhookEvents } from "@/src/db/schema";
 import { publish } from "@/src/events/bus";
 import { log } from "@/src/log";
 import { type ApiResult, HttpError } from "./api/http";
 import { toCents } from "./cart/money";
-import { releaseStock } from "./cart/repo";
+import { recordRefund, releaseOrderHoldings } from "./cart/repo";
 import { readWebhookHeaders, verifyWebhookSignature } from "./paypal/webhook-verify";
 
 type Money = { currency_code?: string; value?: string };
@@ -68,7 +68,15 @@ export async function handleWebhook(req: Request): Promise<ApiResult> {
 		})
 		.onConflictDoNothing()
 		.returning({ id: webhookEvents.id });
-	if (inserted.length === 0) return { status: 200, body: { received: true, duplicate: true } };
+	if (inserted.length === 0) {
+		// Redelivery. Skip it only if an earlier delivery was fully applied; otherwise (that
+		// delivery failed half way) apply it now. Reconciling is idempotent.
+		const [prev] = await db()
+			.select({ processedAt: webhookEvents.processedAt })
+			.from(webhookEvents)
+			.where(eq(webhookEvents.id, event.id));
+		if (prev?.processedAt) return { status: 200, body: { received: true, duplicate: true } };
+	}
 
 	const store = await reconcile(event);
 	await db()
@@ -132,8 +140,7 @@ async function reconcile(e: WebhookEvent): Promise<string | undefined> {
 					.where(and(eq(orders.paypalOrderId, orderId ?? ""), eq(orders.status, "AUTHORIZED")))
 					.returning();
 				if (!o) return storeOfPayPalOrder(orderId);
-				const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, o.id));
-				for (const i of items) if (i.stockReserved) await releaseStock(tx, i.variantId, i.qty);
+				await releaseOrderHoldings(tx, o);
 				return o.merchantId;
 			});
 		}
@@ -173,27 +180,8 @@ async function reconcile(e: WebhookEvent): Promise<string | undefined> {
 				.from(orders)
 				.where(eq(orders.captureId, captureId ?? ""));
 			if (!o || !r.id) return undefined;
-			await db().transaction(async (tx) => {
-				await tx
-					.insert(refunds)
-					.values({
-						id: r.id!,
-						orderId: o.id,
-						captureId: o.captureId!,
-						paypalRefundId: r.id!,
-						amountCents: toCents(r.amount?.value ?? "0"),
-						reason: "refunded in PayPal",
-					})
-					.onConflictDoNothing();
-				const [{ total }] = await tx
-					.select({ total: sql<number>`coalesce(sum(${refunds.amountCents}), 0)::int` })
-					.from(refunds)
-					.where(eq(refunds.orderId, o.id));
-				await tx
-					.update(orders)
-					.set({ status: total >= o.totalCents ? "REFUNDED" : "PARTIALLY_REFUNDED" })
-					.where(eq(orders.id, o.id));
-			});
+			const refund = { id: r.id, amountCents: toCents(r.amount?.value ?? "0"), reason: "refunded in PayPal" };
+			await db().transaction((tx) => recordRefund(tx, o, refund));
 			return o.merchantId;
 		}
 		case "CUSTOMER.DISPUTE.CREATED":

@@ -19,14 +19,14 @@ agent: POST /merchant-cart  {kurta blue M, ship to Austin TX}
 store: 200 INCOMPLETE  ITEM_OUT_OF_STOCK
        resolution: "Switch to Kurta - Indigo, M" (HIGH)  + a machine-applicable patch
 agent: PUT /merchant-cart/{id}  (patch applied)
-store: 201 VALID  total $49.21  payment_method.token = PayPal order 4KK584838Y673292P
+store: 200 READY  total $49.21  payment_method.token = PayPal order 1WD48354GS436435P
 agent: POST /agentic/offers
-store: WELCOME10-2VV6 (10% off, one cart, expires in 30 min)
+store: WELCOME10-SGRQ (10% off, one cart, expires in 30 min)
 agent: PUT with the coupon
 store: VALID  total $44.99  (PayPal order PATCHed to match)
 buyer: approves $44.99 in PayPal
 agent: POST /merchant-cart/{id}/checkout
-store: COMPLETED  order AB-1002  (authorized, NOT captured)
+store: COMPLETED  order AB-1003  (authorized, NOT captured)
 merchant ships -> capture + tracking posted to PayPal -> buyer is charged
 ```
 
@@ -89,7 +89,8 @@ sequenceDiagram
     S->>DB: release
     S-->>Ag: 409 CART_CHANGED_DURING_CHECKOUT
   else timeout / 5xx
-    S-->>Ag: 502, reservation kept; a retry resumes with the same request id
+    S-->>Ag: 502, reservation kept under a lease
+    Note over S,PP: after the lease, a retry reads the payment back from PayPal or charges with the same request id
   else authorized
     S->>DB: order AUTHORIZED, cart COMPLETED
     S-->>Ag: 200 COMPLETED + signed order review link
@@ -109,12 +110,18 @@ sequenceDiagram
 | **Webhooks**, self-verified (CRC32 + SHA256withRSA, cert URL pinned to PayPal hosts), deduplicated by event id, reconciled with conditional updates: approvals, authorizations, captures, refunds, reversals, disputes | [`src/merchant/paypal/webhook-verify.ts`](src/merchant/paypal/webhook-verify.ts), [`src/merchant/webhooks.ts`](src/merchant/webhooks.ts) |
 | Official **`@paypal/paypal-server-sdk`** | [`orders.ts`](src/merchant/paypal/orders.ts) |
 
+### Where AgentBaazar deliberately differs from the Store Sync pattern
+
+PayPal's Store Sync guide captures at checkout, and a `COMPLETED` cart means the payment was captured. AgentBaazar's default (`paymentMode: "authorize"` per merchant) **authorizes** at checkout and **captures when the merchant ships**: a `COMPLETED` cart then means "paid for with a PayPal authorization, held until shipping". An agent buying for someone should not take their money for an item that never ships. A store can opt into capture-at-checkout (`paymentMode: "capture"`), which is the exact Store Sync behaviour; both paths are implemented and tested.
+
 ### Beyond the spec (clearly namespaced extensions)
 
 - `GET /agentic/search`: catalog search for discovery ([`discovery.ts`](src/merchant/discovery.ts))
 - `POST /agentic/offers`: the store mints a one-time, per-cart coupon (first order, bundle) that the agent can apply ([`discovery.ts`](src/merchant/discovery.ts))
 - `resolution_options[].metadata.apply`: a typed `CartPatch` ([`src/cart-spec/extensions.ts`](src/cart-spec/extensions.ts)) so agents fix carts without guessing
-- Signed order review page for the buyer ([`app/m/[store]/orders/[orderId]/page.tsx`](app/m/%5Bstore%5D/orders/%5BorderId%5D/page.tsx))
+- `GET` on a cart shows `status: READY` and, once PayPal's `CHECKOUT.ORDER.APPROVED` webhook arrives, the buyer's `payer_id`, so an agent knows when it can check out
+- 422 responses carry the spec's optional `business_context` (a `ValidationIssue` with `resolution_options`), so a failed checkout is as actionable as a failed PUT
+- Signed order review page for the buyer ([`app/m/[store]/orders/[orderId]/page.tsx`](app/m/%5Bstore%5D/orders/%5BorderId%5D/page.tsx)) and product pages that the feeds link to ([`app/m/[store]/p/[productId]/page.tsx`](app/m/%5Bstore%5D/p/%5BproductId%5D/page.tsx))
 
 ## The cart engine handles
 
@@ -124,15 +131,15 @@ Money is integer cents end to end. Tax is computed in parts per million with hal
 
 ## Sandbox evidence
 
-From a `pnpm smoke` run with a real sandbox buyer approval (October 2026):
+From `pnpm smoke` runs with a real sandbox buyer approval (October 2026):
 
 | Step | PayPal id |
 |---|---|
-| Order created with intent `AUTHORIZE`, then PATCHed from $49.21 to $44.99 after the coupon | order `4KK584838Y673292P` |
-| Authorization at checkout (not captured) | `1AC80273G87881435` |
-| Capture on ship, tracking `1Z999AA148865433` posted | capture `6H166249T63296819` |
-| $5.00 partial refund through the admin API | refund `1RT27968CC531804V` |
-| Real webhooks received, signature-verified, and reconciled | `CHECKOUT.ORDER.APPROVED`, `PAYMENT.AUTHORIZATION.CREATED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.REFUNDED` |
+| Order created with intent `AUTHORIZE`, then PATCHed from $49.21 to $44.99 after the coupon | order `1WD48354GS436435P` (AB-1003) |
+| Authorization at checkout (not captured); replaying the checkout returns the same result | `69D19018HN2141242` |
+| Capture on ship, tracking `1Z999AA187516066` posted | capture `9K3578411D708190K` |
+| $5.00 partial refund through the admin API, sent twice with one `request_id`: PayPal returned the same refund both times | refund `8UP88570X0454281M` |
+| Real webhooks received, signature-verified, and reconciled (earlier run, order AB-1002) | `CHECKOUT.ORDER.APPROVED`, `PAYMENT.AUTHORIZATION.CREATED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.REFUNDED` |
 
 ## Quick start (about 10 minutes, no credit card anywhere)
 
@@ -151,7 +158,7 @@ pnpm smoke              # the full flow above; prints a PayPal link to approve a
 
 PayPal credentials: developer.paypal.com → Apps & Credentials → Sandbox → create an app. Sandbox buyer: Testing Tools → Sandbox Accounts → the Personal account.
 
-Webhooks need a public URL. Expose the dev server (for example `cloudflared tunnel --url http://localhost:3000`), set `PUBLIC_URL` to the tunnel URL, then run `pnpm register-webhook` and put the printed id in `PAYPAL_WEBHOOK_ID`.
+Webhooks need a public HTTPS URL. Expose the dev server (for example `cloudflared tunnel --url http://localhost:3000`), set `PUBLIC_URL` to the tunnel URL, run `pnpm register-webhook --url https://<tunnel>/api/paypal/webhooks`, and put the printed id in `PAYPAL_WEBHOOK_ID`. When the tunnel URL changes, run it again: it moves the same webhook to the new URL.
 
 ### Demo stores
 
@@ -175,7 +182,7 @@ All Cart API routes live under `/api/stores/{store}/paypal/v1` and require `Auth
 | GET | `/api/stores/{store}/agentic/search?q=&max_price=` | public |
 | POST | `/api/stores/{store}/agentic/offers` | Cart JWT |
 | GET | `/api/stores/{store}/orders/{orderId}` | Cart JWT (placing platform only) |
-| POST | `/api/stores/{store}/orders/{orderId}/ship`, `/cancel`, `/refund` | `STORE_ADMIN_TOKEN` |
+| POST | `/api/stores/{store}/orders/{orderId}/ship`, `/cancel`, `/refund` (refund takes a required `request_id`, so a retry never refunds twice) | `STORE_ADMIN_TOKEN` |
 | POST | `/api/paypal/webhooks` | PayPal signature |
 | GET | `/.well-known/jwks.json` | public, the platform's signing keys |
 | GET | `/api/health` (`?deep=1` checks the database) | public |
@@ -185,12 +192,13 @@ Errors use PayPal's envelope (`name`, `message`, `debug_id`, `details[]`).
 ## Tests
 
 ```bash
-pnpm test          # 87 tests
-pnpm typecheck && pnpm lint
+pnpm test          # unit + integration tests
+pnpm typecheck     # generates Next.js route types, then tsc
+pnpm lint
 ```
 
 - Unit tests: the cart engine, money math, feed parsing, JWT verification, webhook signature verification, route auth and merchant binding.
-- **Integration tests** ([`service.integration.test.ts`](src/merchant/cart/service.integration.test.ts)) run the cart service against real Postgres with an in-memory PayPal ([`src/test/fake-paypal.ts`](src/test/fake-paypal.ts)) that can decline, return a `DENIED` status, authorize a different amount, lose its response after charging, or run a concurrent request mid-charge. They cover idempotent replay, compensation, the concurrent-edit 409, resuming after a lost response without a second charge, and a sell-out between validation and reservation. Set `TEST_DATABASE_URL` (in `.env.local`) to a throwaway database, such as a Neon branch, to run them; otherwise they are skipped.
+- **Integration tests** ([`src/merchant/integration.test.ts`](src/merchant/integration.test.ts)) run the merchant side against real Postgres with an in-memory PayPal ([`src/test/fake-paypal.ts`](src/test/fake-paypal.ts)) that can decline, return a `DENIED` or `DECLINED` status, authorize a different amount, lose its response after charging, or run a concurrent request mid-charge. Checkout: idempotent replay, compensation, the concurrent-edit 409, resuming after a lost response without a second charge (and 409 while the first attempt still holds its lease), voiding a charge whose reservation was released, a sell-out between validation and reservation. Fulfillment: capture on ship, declined capture, cancel returning stock and coupons exactly once alongside the `VOIDED` webhook, refund idempotency and totals. Webhooks: dashboard refunds, duplicate deliveries, and redelivery of an event whose processing failed half way. Set `TEST_DATABASE_URL` (in `.env.local`) to a throwaway database, such as a Neon branch, to run them; otherwise they are skipped.
 - `pnpm smoke`: the end-to-end run against the real sandbox.
 
 ## Security

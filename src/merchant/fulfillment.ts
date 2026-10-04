@@ -12,8 +12,9 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { Money } from "@/src/cart-spec/schema";
+import { stableRequestId } from "@/src/crypto";
 import { db } from "@/src/db/client";
-import { orderItems, orders, refunds, shipments } from "@/src/db/schema";
+import { orders, refunds, shipments } from "@/src/db/schema";
 import { publish } from "@/src/events/bus";
 import { log } from "@/src/log";
 import { type ApiResult, notFound, unprocessable } from "./api/http";
@@ -39,8 +40,8 @@ async function load(store: string | repo.Merchant, orderId: string) {
 /** What an agent may see about an order it placed. */
 export async function orderStatus(m: repo.Merchant, orderId: string, caller: CartCaller): Promise<ApiResult> {
 	const { o } = await load(m, orderId);
-	// Only the platform that placed the order may read it.
-	if (o.agentPlatform && o.agentPlatform !== caller.payload.iss)
+	// Only the platform that placed the order may read it (same rule as carts).
+	if (o.agentPlatform && o.agentPlatform !== caller.subject)
 		throw notFound("ORDER_NOT_FOUND", `Order '${orderId}' does not exist`);
 	const ships = await db().select().from(shipments).where(eq(shipments.orderId, o.id));
 	return {
@@ -133,9 +134,13 @@ export async function cancelOrder(store: string, orderId: string): Promise<ApiRe
 		throw unprocessable(`Order is ${o.status}; only an uncaptured authorization can be voided`);
 	await paypal.voidAuthorization(creds, o.authorizationId!);
 	await db().transaction(async (tx) => {
-		const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, o.id));
-		for (const i of items) if (i.stockReserved) await repo.releaseStock(tx, i.variantId, i.qty);
-		await tx.update(orders).set({ status: "VOIDED" }).where(eq(orders.id, o.id));
+		// Conditional, so this and the VOIDED webhook hand stock and coupons back only once.
+		const [voided] = await tx
+			.update(orders)
+			.set({ status: "VOIDED" })
+			.where(and(eq(orders.id, o.id), eq(orders.status, "AUTHORIZED")))
+			.returning();
+		if (voided) await repo.releaseOrderHoldings(tx, voided);
 	});
 	publish({ type: "order", store: m.id, orderId: o.id, status: "VOIDED", totalCents: o.totalCents });
 	return { status: 200, body: { order_id: o.id, status: "VOIDED" } };
@@ -144,8 +149,8 @@ export async function cancelOrder(store: string, orderId: string): Promise<ApiRe
 const RefundBody = z.object({
 	amount: Money.extend({ currency_code: z.literal("USD") }).optional(),
 	reason: z.string().max(255).optional(),
-	/** Send the same id when retrying so PayPal does not refund twice */
-	request_id: z.string().max(100).optional(),
+	/** Required: the same id on a retry makes PayPal return the original refund instead of refunding twice */
+	request_id: z.string().min(8).max(100),
 });
 
 export async function refundOrder(store: string, orderId: string, body: unknown): Promise<ApiResult> {
@@ -163,25 +168,15 @@ export async function refundOrder(store: string, orderId: string, body: unknown)
 	if (amount <= 0 || amount > remaining)
 		throw unprocessable(`Refund must be between 0.01 and ${(remaining / 100).toFixed(2)}`);
 
-	const r = await paypal.refundCapture(creds, o.captureId!, req.request_id ?? randomUUID(), {
+	// PayPal itself refuses to refund more than is left on the capture, so concurrent
+	// refunds cannot over-refund; the status below is derived from what was recorded.
+	const r = await paypal.refundCapture(creds, o.captureId!, stableRequestId(`${o.id}-refund-${req.request_id}`), {
 		amountCents: amount,
 		note: req.reason,
 	});
-	const status = amount === remaining ? "REFUNDED" : "PARTIALLY_REFUNDED";
-	await db().transaction(async (tx) => {
-		await tx
-			.insert(refunds)
-			.values({
-				id: r.refundId,
-				orderId: o.id,
-				captureId: o.captureId!,
-				paypalRefundId: r.refundId,
-				amountCents: amount,
-				reason: req.reason,
-			})
-			.onConflictDoNothing();
-		await tx.update(orders).set({ status }).where(eq(orders.id, o.id));
-	});
+	const status = await db().transaction((tx) =>
+		repo.recordRefund(tx, o, { id: r.refundId, amountCents: amount, reason: req.reason }),
+	);
 	publish({ type: "order", store: m.id, orderId: o.id, status, totalCents: o.totalCents });
 	return { status: 200, body: { order_id: o.id, status, refund_id: r.refundId, refunded: toMoney(amount) } };
 }

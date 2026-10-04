@@ -195,7 +195,10 @@ export const orders = merchant.table(
 		buyer: jsonb().$type<Record<string, unknown>>(),
 		shipTo: jsonb("ship_to").$type<Record<string, unknown>>(),
 		source: text().notNull().default("agent"), // agent | storefront
+		/** JWT subject of the platform that placed the order; only it may read the order */
 		agentPlatform: text("agent_platform"),
+		/** While PENDING: a checkout owns the charge until then; after it, a retry may resume */
+		chargingUntil: ts("charging_until"),
 		createdAt: ts("created_at").notNull().defaultNow(),
 		capturedAt: ts("captured_at"),
 	},

@@ -53,3 +53,6 @@ yarn-error.log*
 
 # local tool output
 .playwright-mcp/
+
+# agent skill docs installed by `neon skills`
+.claude/skills/

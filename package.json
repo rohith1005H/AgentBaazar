@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:push": "node --env-file=.env --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs push",
@@ -21,12 +21,9 @@
     "simulate-webhook": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/simulate-webhook.ts"
   },
   "dependencies": {
-    "@ai-sdk/google": "4.0.87",
-    "@ai-sdk/groq": "4.0.54",
     "@neon/config": "1.8.3",
     "@neondatabase/serverless": "1.2.0",
     "@paypal/paypal-server-sdk": "2.5.0",
-    "ai": "7.0.127",
     "drizzle-orm": "0.45.3",
     "jose": "6.2.12",
     "next": "16.3.8",

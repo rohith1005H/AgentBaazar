@@ -1,9 +1,19 @@
 /** Database access for the cart service. Everything merchant-scoped. */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { CheckoutFieldType } from "@/src/cart-spec/schema";
 import { decrypt } from "@/src/crypto";
 import { db, type Tx } from "@/src/db/client";
-import { carts, coupons, merchants, orderNumberSeq, orders, products, variants } from "@/src/db/schema";
+import {
+	carts,
+	coupons,
+	merchants,
+	orderItems,
+	orderNumberSeq,
+	orders,
+	products,
+	refunds,
+	variants,
+} from "@/src/db/schema";
 import { envCreds, type PayPalCreds } from "@/src/merchant/paypal/http";
 import type { Availability, CatalogVariant, CouponRow } from "./types";
 
@@ -146,6 +156,61 @@ export async function releaseCoupon(tx: Tx, merchantId: string, code: string): P
 		.update(coupons)
 		.set({ used: sql`greatest(${coupons.used} - 1, 0)` })
 		.where(and(eq(coupons.merchantId, merchantId), eq(coupons.code, code)));
+}
+
+/**
+ * Give back what an order held: reserved stock and consumed coupons. Callers make the
+ * order's status transition in the same transaction, so this runs once per order.
+ */
+export async function releaseOrderHoldings(tx: Tx, order: Pick<OrderRow, "id" | "merchantId" | "couponCodes">) {
+	const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+	for (const i of items) if (i.stockReserved) await releaseStock(tx, i.variantId, i.qty);
+	for (const code of order.couponCodes ?? []) await releaseCoupon(tx, order.merchantId, code);
+}
+
+/** Record a refund once (keyed by PayPal's refund id) and derive the order's refund status from the total. */
+export async function recordRefund(
+	tx: Tx,
+	order: Pick<OrderRow, "id" | "captureId" | "totalCents">,
+	refund: { id: string; amountCents: number; reason?: string },
+): Promise<"REFUNDED" | "PARTIALLY_REFUNDED"> {
+	await tx
+		.insert(refunds)
+		.values({
+			id: refund.id,
+			orderId: order.id,
+			captureId: order.captureId!,
+			paypalRefundId: refund.id,
+			amountCents: refund.amountCents,
+			reason: refund.reason,
+		})
+		.onConflictDoNothing();
+	const [{ total }] = await tx
+		.select({ total: sql<number>`coalesce(sum(${refunds.amountCents}), 0)::int` })
+		.from(refunds)
+		.where(eq(refunds.orderId, order.id));
+	const status = total >= order.totalCents ? "REFUNDED" : "PARTIALLY_REFUNDED";
+	await tx.update(orders).set({ status }).where(eq(orders.id, order.id));
+	return status;
+}
+
+/** Database time + ms, so leases agree across app instances. */
+export const leaseUntil = (ms: number) => sql`now() + ${ms} * interval '1 millisecond'`;
+
+/** Claim a PENDING order's charge if no live attempt holds it. */
+export async function takeChargeLease(orderId: string, ms: number): Promise<boolean> {
+	const r = await db()
+		.update(orders)
+		.set({ chargingUntil: leaseUntil(ms) })
+		.where(
+			and(
+				eq(orders.id, orderId),
+				eq(orders.status, "PENDING"),
+				or(isNull(orders.chargingUntil), lte(orders.chargingUntil, sql`now()`)),
+			),
+		)
+		.returning({ id: orders.id });
+	return r.length === 1;
 }
 
 export async function orderForPayPalOrder(paypalOrderId: string): Promise<OrderRow | undefined> {

@@ -15,6 +15,8 @@ type FakeOrder = {
 	payerId?: string;
 	authorizationId?: string;
 	captureId?: string;
+	/** what the authorization/capture was for, when a test makes it differ from the order */
+	chargedCents?: number;
 };
 
 type ChargeBehaviour =
@@ -25,6 +27,10 @@ type ChargeBehaviour =
 	| { kind: "lost-response" }
 	/** Run something (e.g. a concurrent cart update) while PayPal is processing */
 	| { kind: "during"; fn: () => Promise<void> };
+
+/** PayPal's ids are globally unique; so are these (rows from other tests share the database). */
+const RUN = Date.now().toString(36).toUpperCase();
+let nextId = 0;
 
 const money = (cents: number) => ({ currencyCode: "USD", value: (cents / 100).toFixed(2) });
 
@@ -43,6 +49,10 @@ export const fake = {
 		this.refunded = [];
 		this.charges = 0;
 		this.next = { charge: undefined, getOrder: undefined };
+	},
+	/** The authorization PayPal made on an order */
+	authorizationOf(id: string) {
+		return this.orders.get(id)?.authorizationId;
 	},
 	approve(id: string, payerId = "PAYER-TEST") {
 		const o = this.orders.get(id)!;
@@ -84,8 +94,12 @@ export async function getOrder(_c: unknown, id: string) {
 			{
 				amount: money(o.amountCents),
 				payments: {
-					authorizations: o.authorizationId ? [{ id: o.authorizationId, status: "CREATED" }] : [],
-					captures: o.captureId ? [{ id: o.captureId, status: "COMPLETED" }] : [],
+					authorizations: o.authorizationId
+						? [{ id: o.authorizationId, status: "CREATED", amount: money(o.chargedCents ?? o.amountCents) }]
+						: [],
+					captures: o.captureId
+						? [{ id: o.captureId, status: "COMPLETED", amount: money(o.chargedCents ?? o.amountCents) }]
+						: [],
 				},
 			},
 		],
@@ -113,11 +127,12 @@ async function charge(id: string, requestId: string, kind: "authorization" | "ca
 
 	fake.charges += 1;
 	o.status = "COMPLETED";
-	const chargeId = `${kind === "authorization" ? "AUTH" : "CAP"}-${fake.charges}`;
+	const chargeId = `${kind === "authorization" ? "AUTH" : "CAP"}-${RUN}-${++nextId}`;
 	if (kind === "authorization") o.authorizationId = chargeId;
 	else o.captureId = chargeId;
 	const status = behaviour?.kind === "status" ? behaviour.status : kind === "authorization" ? "CREATED" : "COMPLETED";
 	const amountCents = behaviour?.kind === "amount" ? behaviour.amountCents : o.amountCents;
+	o.chargedCents = amountCents;
 	const result =
 		kind === "authorization"
 			? { authorizationId: chargeId, status, amountCents }
@@ -134,13 +149,36 @@ export async function voidAuthorization(_c: unknown, authorizationId: string) {
 	fake.voided.push(authorizationId);
 }
 
-export async function refundCapture(_c: unknown, captureId: string, _r: string, opts: { amountCents?: number } = {}) {
-	fake.refunded.push({ captureId, amountCents: opts.amountCents });
-	return { refundId: `REF-${fake.refunded.length}`, status: "COMPLETED" };
+export async function refundCapture(
+	_c: unknown,
+	captureId: string,
+	requestId: string,
+	opts: { amountCents?: number } = {},
+) {
+	return idempotent(requestId, () => {
+		fake.refunded.push({ captureId, amountCents: opts.amountCents });
+		return { refundId: `REF-${fake.refunded.length}`, status: "COMPLETED" };
+	});
 }
 
-export async function captureAuthorization(_c: unknown, authorizationId: string) {
-	return { captureId: `CAP-${authorizationId}`, status: "COMPLETED", amountCents: 0 };
+/** Capture on ship. Steered by `fake.next.charge` (decline, status) like the checkout charge. */
+export async function captureAuthorization(_c: unknown, authorizationId: string, requestId: string) {
+	const behaviour = fake.next.charge;
+	fake.next.charge = undefined;
+	if (fake.byRequestId.has(requestId)) return fake.byRequestId.get(requestId);
+	const o = [...fake.orders.values()].find((x) => x.authorizationId === authorizationId);
+	if (!o) throw new PayPalError(404, "RESOURCE_NOT_FOUND", "authorization not found");
+	if (behaviour?.kind === "decline")
+		throw new PayPalError(422, "UNPROCESSABLE_ENTITY", "declined", "dbg-3", [{ issue: behaviour.issue }]);
+	fake.charges += 1;
+	o.captureId = `CAP-${authorizationId}`;
+	const result = {
+		captureId: o.captureId,
+		status: behaviour?.kind === "status" ? behaviour.status : "COMPLETED",
+		amountCents: o.chargedCents ?? o.amountCents,
+	};
+	fake.byRequestId.set(requestId, result);
+	return result;
 }
 
 export async function addTracking() {

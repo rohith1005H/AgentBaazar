@@ -292,6 +292,8 @@ export const ApiError = z.object({
 	name: z.string(),
 	message: z.string(),
 	debug_id: z.string().optional(),
+	/** 422 only: the same ValidationIssue shape as validation_issues, so agents can act on it */
+	business_context: ValidationIssue.optional(),
 	details: z
 		.array(z.object({ field: z.string().optional(), issue: z.string().optional(), description: z.string().optional() }))
 		.optional(),
