@@ -56,3 +56,4 @@ yarn-error.log*
 
 # agent skill docs installed by `neon skills`
 .claude/skills/
+SUBMISSION.md
