@@ -6,7 +6,7 @@ AI shopping agents are about to buy things for people. PayPal's agentic commerce
 
 AgentBaazar is that missing merchant side, open source. Give it a product feed, and the store gets a spec-conformant Cart API that agents can shop and pay through PayPal, plus buyer protection that a human checkout never needed: **the buyer is only charged when the merchant ships.**
 
-> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). Status: the merchant side (everything below) works end to end against the PayPal sandbox. The buyer agent and the merchant console are in progress; see [Roadmap](#roadmap).
+> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). Status: the merchant side (everything below) works end to end, deployed, against the PayPal sandbox. The buyer agent and the merchant console are in progress; see [Roadmap](#roadmap).
 
 ---
 
@@ -131,15 +131,15 @@ Money is integer cents end to end. Tax is computed in parts per million with hal
 
 ## Sandbox evidence
 
-From `pnpm smoke` runs with a real sandbox buyer approval (October 2026):
+From a `pnpm smoke` run against the live deployment (https://agentbaazar.onrender.com) with a real sandbox buyer approval, October 2026:
 
 | Step | PayPal id |
 |---|---|
-| Order created with intent `AUTHORIZE`, then PATCHed from $49.21 to $44.99 after the coupon | order `1WD48354GS436435P` (AB-1003) |
-| Authorization at checkout (not captured); replaying the checkout returns the same result | `69D19018HN2141242` |
-| Capture on ship, tracking `1Z999AA187516066` posted | capture `9K3578411D708190K` |
-| $5.00 partial refund through the admin API, sent twice with one `request_id`: PayPal returned the same refund both times | refund `8UP88570X0454281M` |
-| Real webhooks received, signature-verified, and reconciled (earlier run, order AB-1002) | `CHECKOUT.ORDER.APPROVED`, `PAYMENT.AUTHORIZATION.CREATED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.REFUNDED` |
+| Order created with intent `AUTHORIZE`, then PATCHed from $49.21 to $44.99 after the coupon | order `0L264289453770740` (AB-1005) |
+| Authorization at checkout (not captured); replaying the checkout returns the same result | `3CC090218U6079423` |
+| Capture on ship, tracking `1Z999AA195171195` posted | capture `04N42508GA558362H` |
+| $5.00 partial refund through the admin API, sent twice with one `request_id`: PayPal refunded once | refund `1J073660WF579632V` |
+| Real webhooks delivered to the deployment, signature-verified, and reconciled | `CHECKOUT.ORDER.APPROVED`, `PAYMENT.AUTHORIZATION.CREATED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.REFUNDED` |
 
 ## Quick start (about 10 minutes, no credit card anywhere)
 
@@ -164,7 +164,7 @@ Webhooks need a public HTTPS URL. Expose the dev server (for example `cloudflare
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/rohith1005H/AgentBaazar)
 
-[`render.yaml`](render.yaml) describes one free Render web service in Ohio, next to a Neon database in `us-east-2`. After it is created, add the secrets in the service's Environment tab: `DATABASE_URL`, `APP_SECRET`, `STORE_ADMIN_TOKEN`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PUBLIC_URL` (the `onrender.com` URL), `AGENTIC_JWKS_URL` (`<PUBLIC_URL>/.well-known/jwks.json`) and `JWT_ISSUER` (`PUBLIC_URL`). Then run `pnpm seed` and `pnpm register-webhook --url <PUBLIC_URL>/api/paypal/webhooks` locally with `PUBLIC_URL` pointing at the deployment. Free instances sleep after 15 idle minutes; a free uptime monitor hitting `/api/health` keeps the demo awake.
+[`render.yaml`](render.yaml) describes one free Render web service in Ohio, next to a Neon database in `us-east-2`. After it is created, add the secrets in the service's Environment tab: `DATABASE_URL`, `APP_SECRET`, `STORE_ADMIN_TOKEN`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PUBLIC_URL` (the `onrender.com` URL), `AGENTIC_JWKS_URL` (`<PUBLIC_URL>/.well-known/jwks.json`) and `JWT_ISSUER` (`PUBLIC_URL`). Then run `pnpm seed` and `pnpm register-webhook --url <PUBLIC_URL>/api/paypal/webhooks` locally with `PUBLIC_URL` pointing at the deployment. Free instances sleep after 15 idle minutes; [`.github/workflows/keep-demo-awake.yml`](.github/workflows/keep-demo-awake.yml) pings `/api/health` every 5 minutes to keep the demo awake.
 
 ### Demo stores
 
@@ -236,7 +236,7 @@ demo-data/                   three demo stores and their feeds
 - [ ] Buyer agent (Gemini, free tier) that shops any AgentBaazar store through the Cart API
 - [ ] Merchant console: live agent carts and orders, ship/refund
 - [ ] Merchant MCP server
-- [ ] Hosted demo (Render Blueprint ready: `render.yaml`)
+- [x] Hosted demo: https://agentbaazar.onrender.com (Render free tier, kept awake by a scheduled GitHub Action)
 
 ## Stack
 

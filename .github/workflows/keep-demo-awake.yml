@@ -1,0 +1,14 @@
+# Render's free instance sleeps after 15 idle minutes (~50 s to wake). Ping it so the
+# hosted demo answers immediately. GitHub runs schedules every 5 minutes at best.
+name: keep-demo-awake
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: curl -fsS -m 120 --retry 2 https://agentbaazar.onrender.com/api/health
