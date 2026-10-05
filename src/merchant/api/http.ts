@@ -84,10 +84,11 @@ export function storeRoute<P extends { store: string }>(handler: AuthedHandler<P
 			throw new AuthError("Token was issued for a different merchant", 403);
 		// Per caller, and per buyer session when the platform says which one (`sid`), so one
 		// busy platform's buyers do not share a single bucket.
+		// Widest bucket first, so a request the ceiling rejects costs no narrower token. `sid` is
+		// minted by the caller, so the platform as a whole has a (larger) ceiling too.
 		const sid = typeof caller.payload.sid === "string" ? caller.payload.sid.slice(0, 64) : "";
-		rateLimit(`${merchant.id}:${caller.subject}:${sid}`);
-		// `sid` is minted by the caller, so the platform as a whole also has a (larger) ceiling.
 		rateLimit(`${merchant.id}:${caller.subject}`, { capacity: 1200, refillPerSec: 20 });
+		rateLimit(`${merchant.id}:${caller.subject}:${sid}`);
 		return handler({ req, params, requestId, caller, merchant });
 	});
 }

@@ -56,6 +56,7 @@ export async function consoleData(): Promise<ConsoleData> {
 	return {
 		orders: orderRows.map((o) => ({
 			id: o.id,
+			store_id: o.merchantId, // not a Studio field: lets the console's actions address the order
 			cart_id: o.cartId,
 			store: storeName.get(o.merchantId) ?? o.merchantId,
 			status: o.status,

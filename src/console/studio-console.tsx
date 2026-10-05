@@ -140,6 +140,7 @@ export default function StudioConsole() {
 						{ label: "Sales by store", prompt: "Add a donut chart of agent sales by store." },
 						{ label: "Orders to ship", prompt: "Add a table of authorized orders with store, total and placed date." },
 						{ label: "Top problems", prompt: "Which problems did agents run into most often?" },
+						{ label: "Refund $5", prompt: "Refund $5 on the most recent captured order for a late delivery." },
 					],
 				})),
 		[],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { setAnalystData, summarize, widgetFor } from "./analyst";
+import { listOrders, setAnalystData, summarize, widgetFor } from "./analyst";
 import type { ConsoleData } from "./console-data";
 
 describe("console analyst tools", () => {
@@ -42,5 +42,20 @@ describe("console analyst tools", () => {
 			"item out of stock: 2\nback ordered: 1",
 		);
 		expect(summarize({ group_by: "orders.store", measure: "carts.total", aggregation: "sum" })).toMatch(/same source/);
+	});
+
+	it("lists orders newest first, filtered by status", () => {
+		setAnalystData({
+			orders: [
+				{ id: "AB-3", store: "Patel Textiles", status: "CAPTURED", total: 44.99, created_at: "2026-10-05T13:52:00Z" },
+				{ id: "AB-2", store: "Lumen Ceramics", status: "AUTHORIZED", total: 31.48, created_at: "2026-10-05T12:00:00Z" },
+			],
+			carts: [],
+			cart_stages: [],
+			cart_issues: [],
+		} as unknown as ConsoleData);
+		expect(listOrders("captured")).toBe("AB-3 | Patel Textiles | CAPTURED | $44.99 | placed 2026-10-05T13:52:00Z");
+		expect(listOrders("REFUNDED")).toBe("No REFUNDED orders.");
+		expect(listOrders(undefined, 1).split("\n")).toHaveLength(1);
 	});
 });

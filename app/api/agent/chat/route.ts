@@ -23,11 +23,12 @@ export async function POST(req: Request) {
 			throw new HttpError(400, { name: "INVALID_REQUEST", message: "messages must be a non-empty array (max 80)" });
 
 		const session = await currentSession({ create: false });
-		rateLimit(`agent:session:${session.id}`, { capacity: 15, refillPerSec: 1 / 20 });
-		rateLimit(`agent:ip:${clientIp(req)}`, { capacity: 40, refillPerSec: 1 / 10 });
-		// One ceiling for everyone: the free LLM quota is shared, so no visitor rotating
-		// sessions or headers can drain it during judging. ~30 turns a minute.
+		// Widest first, so a request the global ceiling rejects costs no per-IP or per-session
+		// token. The free LLM quota is shared: no visitor rotating sessions or headers can
+		// drain it during judging (~30 turns a minute overall).
 		rateLimit("agent:all", { capacity: 60, refillPerSec: 1 / 2 });
+		rateLimit(`agent:ip:${clientIp(req)}`, { capacity: 40, refillPerSec: 1 / 10 });
+		rateLimit(`agent:session:${session.id}`, { capacity: 15, refillPerSec: 1 / 20 });
 
 		return createAgentUIStreamResponse({
 			agent: shopper(session),
