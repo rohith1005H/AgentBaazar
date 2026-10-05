@@ -15,7 +15,7 @@ type SessionInfo = { buyer: string; ship_to: string; budget: string | null; deli
 
 const EXAMPLES = [
 	"A blue cotton kurta in size M, under $40. My budget is $60 in total.",
-	"1 kg of Monsooned Malabar coffee beans. Budget $45.",
+	"1 kg of Monsooned Malabar coffee beans. Budget $75.",
 	"A small terracotta planter for my desk, under $50 all in.",
 ];
 

@@ -26,7 +26,7 @@ export function fixDecision(cart: PayPalCart | undefined, issue: number, option:
 	if (ASK_FIRST.has(opt.action) || costsMore || emptiesCart)
 		return {
 			type: "user-approval",
-			reason: `${iss?.user_message ?? iss?.message} Proposed: ${opt.label}${cost ? ` (${cost})` : ""}.`,
+			reason: `${iss?.user_message ?? iss?.message} Proposed: ${opt.label}${cost && !/^[+-]?\$0\.00$/.test(cost) ? ` (${cost})` : ""}.`,
 		};
 	return undefined;
 }

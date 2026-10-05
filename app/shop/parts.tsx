@@ -60,7 +60,9 @@ export function ToolEntry({ part, actions, busy }: { part: ToolPart; actions: Pa
 	const out = part.output;
 	const err = part.state === "output-error" ? part.errorText : failure(out);
 	if (err) return <Entry tone="issue">{err}</Entry>;
-	const running = part.state === "input-streaming" || part.state === "input-available";
+	// Anything short of a result (streaming input, waiting for an approval answer, executing)
+	// is "in progress"; cards read `output` only once it exists.
+	const running = part.state !== "output-available";
 
 	switch (name) {
 		case "set_budget": {
@@ -90,10 +92,10 @@ export function ToolEntry({ part, actions, busy }: { part: ToolPart; actions: Pa
 			const c = out as CartView;
 			return (
 				<Entry tone={c.issues.length ? "issue" : "plain"}>
-					Opened a cart at {storeName(c.store_id)}
+					Opened a cart at {storeName(c.store_id).replace(/\.$/, "")}.
 					{c.issues.length
-						? `. The store flagged ${c.issues.length === 1 ? "a problem" : `${c.issues.length} problems`}:`
-						: "."}
+						? ` The store flagged ${c.issues.length === 1 ? "a problem" : `${c.issues.length} problems`}:`
+						: ""}
 					<Issues cart={c} />
 				</Entry>
 			);
