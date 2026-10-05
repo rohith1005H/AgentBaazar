@@ -290,7 +290,10 @@ export const stores = platform.table("stores", {
 
 export const sessions = platform.table("sessions", {
 	id: text().primaryKey(),
+	/** The spending limit the buyer gave the agent */
 	mandate: jsonb().$type<Record<string, unknown>>(),
+	/** The buyer's saved name, email and shipping address (a demo stand-in for a signed-in account) */
+	profile: jsonb().$type<Record<string, unknown>>(),
 	createdAt: ts("created_at").notNull().defaultNow(),
 });
 

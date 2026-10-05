@@ -12,7 +12,8 @@ export default defineConfig({
 		include: ["src/**/*.test.ts"],
 		environment: "node",
 		env: local.TEST_DATABASE_URL ? { TEST_DATABASE_URL: local.TEST_DATABASE_URL } : {},
-		testTimeout: 30_000,
+		// integration tests talk to a real Postgres across the internet; give slow links room
+		testTimeout: 90_000,
 		hookTimeout: 60_000,
 	},
 });

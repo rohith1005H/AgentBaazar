@@ -82,7 +82,7 @@ export function storeRoute<P extends { store: string }>(handler: AuthedHandler<P
 		if (!merchant) throw notFound("STORE_NOT_FOUND", `Store '${params.store}' does not exist`);
 		if (caller.merchantId !== merchant.id && caller.merchantId !== merchant.paypalMerchantId)
 			throw new AuthError("Token was issued for a different merchant", 403);
-		limit(`${merchant.id}:${caller.subject}`);
+		rateLimit(`${merchant.id}:${caller.subject}`);
 		return handler({ req, params, requestId, caller, merchant });
 	});
 }
@@ -173,10 +173,10 @@ function failure(e: unknown, requestId: string, req: Request): Response {
 const BUCKET = { capacity: 120, refillPerSec: 2 };
 const buckets = new Map<string, { tokens: number; at: number }>();
 
-function limit(key: string) {
+export function rateLimit(key: string, bucket: { capacity: number; refillPerSec: number } = BUCKET) {
 	const now = Date.now();
-	const b = buckets.get(key) ?? { tokens: BUCKET.capacity, at: now };
-	b.tokens = Math.min(BUCKET.capacity, b.tokens + ((now - b.at) / 1000) * BUCKET.refillPerSec);
+	const b = buckets.get(key) ?? { tokens: bucket.capacity, at: now };
+	b.tokens = Math.min(bucket.capacity, b.tokens + ((now - b.at) / 1000) * bucket.refillPerSec);
 	b.at = now;
 	if (b.tokens < 1) {
 		buckets.set(key, b);

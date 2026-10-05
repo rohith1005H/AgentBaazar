@@ -8,8 +8,19 @@
 @theme inline {
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
-	--font-sans: var(--font-geist-sans);
-	--font-mono: var(--font-geist-mono);
+	--font-sans: var(--font-hind);
+	--font-display: var(--font-tiro);
+	--font-mono: var(--font-plex-mono);
+
+	/* AgentBaazar: handloom indigo, ledger paper, madder red (the khata's margin and stamp) */
+	--color-ink: #1c2452;
+	--color-indigo: #3446a0;
+	--color-indigo-soft: #e7eaf6;
+	--color-paper: #f4f6fb;
+	--color-rule: #d9deee;
+	--color-madder: #b4232c;
+	--color-pp-gold: #ffc439;
+	--color-pp-navy: #003087;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,4 +33,32 @@
 body {
 	background: var(--background);
 	color: var(--foreground);
+}
+
+/* Ruled ledger paper: one rule per 28px line, so ledger rows sit on the lines. */
+.ledger-paper {
+	background-color: #fff;
+	background-image: repeating-linear-gradient(to bottom, transparent 0 27px, var(--color-rule) 27px 28px);
+	background-position: 0 6px;
+}
+
+@keyframes stamp-press {
+	0% {
+		opacity: 0;
+		transform: rotate(-7deg) scale(1.35);
+	}
+	100% {
+		opacity: 0.9;
+		transform: rotate(-7deg) scale(1);
+	}
+}
+.stamp {
+	transform: rotate(-7deg);
+	opacity: 0.9;
+	animation: stamp-press 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+@media (prefers-reduced-motion: reduce) {
+	.stamp {
+		animation: none;
+	}
 }

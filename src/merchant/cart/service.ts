@@ -578,6 +578,26 @@ function chargeFailure(e: PayPalError, approvalUrl: string | null): Error {
 	]);
 }
 
+/**
+ * The buyer came back from PayPal's approval page (return_url). Ask PayPal, not the query
+ * string, whether the order is approved and by whom, and record the payer on the cart, so a
+ * GET shows `payer_id` right away instead of whenever the CHECKOUT.ORDER.APPROVED webhook lands.
+ */
+export async function recordBuyerApproval(storeId: string, cartId: string, token: string): Promise<boolean> {
+	if (!CART_ID_PATTERN.test(cartId)) return false;
+	const m = await repo.getMerchant(storeId);
+	const row = m && (await repo.getCartRow(m.id, cartId));
+	if (!m || !row || row.paypalOrderId !== token || row.status === "COMPLETED") return false;
+	const order = await paypal.getOrder(repo.credsFor(m), token);
+	const payerId = order.status === "APPROVED" ? order.payer?.payerId : undefined;
+	if (!payerId) return false;
+	await db()
+		.update(carts)
+		.set({ payerId, updatedAt: new Date() })
+		.where(and(eq(carts.id, cartId), eq(carts.paypalOrderId, token)));
+	return true;
+}
+
 // ---------------------------------------------------------------- PayPal order sync
 
 async function syncPayPalOrder(

@@ -33,21 +33,26 @@ export default function Home() {
 	return (
 		<main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-14 px-6 py-20">
 			<header className="flex flex-col gap-4">
-				<p className="font-mono text-sm text-zinc-500">AgentBaazar</p>
-				<h1 className="text-4xl font-semibold tracking-tight">
-					Agent-ready commerce for every small store, on PayPal.
-				</h1>
+				<p className="font-display text-xl text-zinc-500">
+					AgentBaazar <span lang="hi">बाज़ार</span>
+				</p>
+				<h1 className="font-display text-4xl leading-tight">Agent-ready commerce for every small store, on PayPal.</h1>
 				<p className="text-lg text-zinc-600 dark:text-zinc-400">
 					AI agents are starting to shop for people. AgentBaazar gives any small store the merchant side of
 					PayPal&apos;s agentic commerce contract, so agents can find, fix and pay for carts, and buyers are only
 					charged when the order ships.
 				</p>
-				<a
-					className="w-fit rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
-					href="https://github.com/rohith1005H/AgentBaazar"
-				>
-					Source and setup on GitHub
-				</a>
+				<div className="flex flex-wrap items-center gap-3">
+					<a className="w-fit rounded-md bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-indigo" href="/shop">
+						Try the shopping agent
+					</a>
+					<a
+						className="w-fit rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
+						href="https://github.com/rohith1005H/AgentBaazar"
+					>
+						Source and setup on GitHub
+					</a>
+				</div>
 			</header>
 
 			<section className="grid gap-6 sm:grid-cols-2">
