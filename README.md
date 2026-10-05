@@ -6,7 +6,7 @@ AI shopping agents are about to buy things for people. PayPal's agentic commerce
 
 AgentBaazar is that missing merchant side, open source. Give it a product feed, and the store gets a spec-conformant Cart API that agents can shop and pay through PayPal, plus buyer protection that a human checkout never needed: **the buyer is only charged when the merchant ships.**
 
-> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). Status: the merchant side (everything below) works end to end, deployed, against the PayPal sandbox. The buyer agent and the merchant console are in progress; see [Roadmap](#roadmap).
+> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). **Try the shopping agent: https://agentbaazar.onrender.com/shop.** The merchant side and the buyer agent work end to end, deployed, against the PayPal sandbox; the merchant console is in progress (see [Roadmap](#roadmap)).
 
 ---
 
@@ -32,6 +32,24 @@ merchant ships -> capture + tracking posted to PayPal -> buyer is charged
 
 That transcript is a real run of [`pnpm smoke`](scripts/smoke.ts) against the PayPal sandbox (see [Evidence](#sandbox-evidence)).
 
+## The buyer agent
+
+[`/shop`](https://agentbaazar.onrender.com/shop) is an AI shopping agent (Gemini on the free tier, AI SDK 7) that buys from AgentBaazar stores **only through their Cart API**, the way any agent platform would: it signs a JWT per call and never touches the store's database.
+
+Tell it what you need and a budget. It searches every store, opens a cart, fixes what the store flags using the store's own resolution options, asks for a discount, then asks you to approve the payment in PayPal. Once you approve, it places the order; the payment is authorized, and you are charged when the store ships. The chat's ledger (the *khata*) shows every line the store charged against your budget.
+
+The model proposes; **code decides** what money can move ([`src/platform/agent/policy.ts`](src/platform/agent/policy.ts), tested):
+
+| The agent wants to | What happens |
+|---|---|
+| swap to an equivalent in-stock item at the same or lower price | applied automatically |
+| accept a higher price, a back-order or a pre-order, or remove the last item | waits for the buyer's **Accept** (AI SDK tool approval) |
+| send the buyer to the store's site, or contact support | refused; the agent explains |
+| pay without a budget, or above it | refused, whatever the prompt says |
+| pay at all | only after the buyer approved in PayPal, which is a client-side tool the chat completes when the store sees the approval |
+
+Free LLM tiers get busy, so each call falls back through `gemini-3.8-flash` → `gemini-3.5-flash-lite` → Groq `gpt-oss-120b` when a model is overloaded or out of quota ([`src/llm.ts`](src/llm.ts)).
+
 ## Why it is different
 
 | | A typical checkout | AgentBaazar |
@@ -46,7 +64,8 @@ That transcript is a real run of [`pnpm smoke`](scripts/smoke.ts) against the Pa
 ```mermaid
 flowchart LR
   subgraph Agent platform
-    A[Shopping agent] --> C[cart-client<br/>signs RS256 JWT]
+    U[Buyer chat /shop] --> A[Shopping agent<br/>Gemini, AI SDK tool loop<br/>spending rules in code]
+    A --> C[cart-client<br/>signs RS256 JWT]
   end
   C -- "Cart API v1<br/>Bearer JWT" --> R
 
@@ -149,14 +168,16 @@ You need Node 24+, pnpm 11, a free [Neon](https://neon.tech) Postgres database, 
 git clone https://github.com/rohith1005H/AgentBaazar && cd AgentBaazar
 pnpm install
 cp .env.example .env    # fill in DATABASE_URL, PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET,
-                        # APP_SECRET (openssl rand -hex 32), STORE_ADMIN_TOKEN (openssl rand -hex 16)
+                        # APP_SECRET (openssl rand -hex 32), STORE_ADMIN_TOKEN (openssl rand -hex 16),
+                        # GOOGLE_GENERATIVE_AI_API_KEY (and optionally GROQ_API_KEY) for the buyer agent
 pnpm db:push            # create the merchant and platform schemas
 pnpm seed               # three demo stores, their feeds, and a platform signing key
 pnpm dev
 pnpm smoke              # the full flow above; prints a PayPal link to approve as your sandbox buyer
+open http://localhost:3000/shop   # the buyer agent
 ```
 
-PayPal credentials: developer.paypal.com → Apps & Credentials → Sandbox → create an app. Sandbox buyer: Testing Tools → Sandbox Accounts → the Personal account.
+PayPal credentials: developer.paypal.com → Apps & Credentials → Sandbox → create an app. Sandbox buyer: Testing Tools → Sandbox Accounts → the Personal account. Gemini key: aistudio.google.com → Get API key (free, billing off). Groq key: console.groq.com.
 
 Webhooks need a public HTTPS URL. Expose the dev server (for example `cloudflared tunnel --url http://localhost:3000`), set `PUBLIC_URL` to the tunnel URL, run `pnpm register-webhook --url https://<tunnel>/api/paypal/webhooks`, and put the printed id in `PAYPAL_WEBHOOK_ID`. When the tunnel URL changes, run it again: it moves the same webhook to the new URL.
 
@@ -164,7 +185,7 @@ Webhooks need a public HTTPS URL. Expose the dev server (for example `cloudflare
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/rohith1005H/AgentBaazar)
 
-[`render.yaml`](render.yaml) describes one free Render web service in Ohio, next to a Neon database in `us-east-2`. After it is created, add the secrets in the service's Environment tab: `DATABASE_URL`, `APP_SECRET`, `STORE_ADMIN_TOKEN`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PUBLIC_URL` (the `onrender.com` URL), `AGENTIC_JWKS_URL` (`<PUBLIC_URL>/.well-known/jwks.json`) and `JWT_ISSUER` (`PUBLIC_URL`). Then run `pnpm seed` and `pnpm register-webhook --url <PUBLIC_URL>/api/paypal/webhooks` locally with `PUBLIC_URL` pointing at the deployment. Free instances sleep after 15 idle minutes; [`.github/workflows/keep-demo-awake.yml`](.github/workflows/keep-demo-awake.yml) pings `/api/health` every 5 minutes to keep the demo awake.
+[`render.yaml`](render.yaml) describes one free Render web service in Ohio, next to a Neon database in `us-east-2`. After it is created, add the secrets in the service's Environment tab: `DATABASE_URL`, `APP_SECRET`, `STORE_ADMIN_TOKEN`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PUBLIC_URL` (the `onrender.com` URL), `AGENTIC_JWKS_URL` (`<PUBLIC_URL>/.well-known/jwks.json`), `JWT_ISSUER` (`PUBLIC_URL`), `GOOGLE_GENERATIVE_AI_API_KEY` and `GROQ_API_KEY`. Then run `pnpm seed` and `pnpm register-webhook --url <PUBLIC_URL>/api/paypal/webhooks` locally with `PUBLIC_URL` pointing at the deployment. Free instances sleep after 15 idle minutes; [`.github/workflows/keep-demo-awake.yml`](.github/workflows/keep-demo-awake.yml) pings `/api/health` every 5 minutes to keep the demo awake.
 
 ### Demo stores
 
@@ -225,7 +246,8 @@ src/merchant/cart/           engine (pure), service (checkout state machine), re
 src/merchant/catalog/        feed parsing (Google, PayPal Enhanced, OpenAI ACP) and import
 src/merchant/paypal/         Orders/Payments client, webhook signature verification
 src/merchant/                webhooks, fulfillment (ship/cancel/refund), discovery
-src/platform/                agent-platform side: JWT signing, key rotation, cart client
+src/platform/agent/          buyer agent: tools, spending policy, sessions
+src/platform/stores/         agent-platform side: JWT signing, key rotation, cart client
 scripts/                     seed, smoke, import-feed, register-webhook, simulate-webhook
 demo-data/                   three demo stores and their feeds
 ```
@@ -233,14 +255,14 @@ demo-data/                   three demo stores and their feeds
 ## Roadmap
 
 - [x] Cart API v1 merchant side, Orders v2 / Payments v2, webhooks, capture-on-ship
-- [ ] Buyer agent (Gemini, free tier) that shops any AgentBaazar store through the Cart API
+- [x] Buyer agent (Gemini, free tier) that shops any AgentBaazar store through the Cart API: https://agentbaazar.onrender.com/shop
 - [ ] Merchant console: live agent carts and orders, ship/refund
 - [ ] Merchant MCP server
 - [x] Hosted demo: https://agentbaazar.onrender.com (Render free tier, kept awake by a scheduled GitHub Action)
 
 ## Stack
 
-Next.js 16 · TypeScript (strict) · Neon Postgres + Drizzle · `@paypal/paypal-server-sdk` · zod · jose · Vitest · Biome. Everything runs on free tiers.
+Next.js 16 · TypeScript (strict) · Neon Postgres + Drizzle · `@paypal/paypal-server-sdk` · AI SDK 7 + Gemini · zod · jose · Vitest · Biome. Everything runs on free tiers.
 
 ## License
 
