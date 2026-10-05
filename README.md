@@ -6,7 +6,7 @@ AI shopping agents are about to buy things for people. PayPal's agentic commerce
 
 AgentBaazar is that missing merchant side, open source. Give it a product feed, and the store gets a spec-conformant Cart API that agents can shop and pay through PayPal, plus buyer protection that a human checkout never needed: **the buyer is only charged when the merchant ships.**
 
-> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). **Try the shopping agent: https://agentbaazar.onrender.com/shop.** The merchant side and the buyer agent work end to end, deployed, against the PayPal sandbox; the merchant console is in progress (see [Roadmap](#roadmap)).
+> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). **Try it: the shopping agent at https://agentbaazar.onrender.com/shop and the merchant console at https://agentbaazar.onrender.com/console** (password in the submission's testing notes). The merchant side, the buyer agent and the console all work end to end, deployed, against the PayPal sandbox.
 
 ---
 
@@ -49,6 +49,17 @@ The model proposes; **code decides** what money can move ([`src/platform/agent/p
 | pay at all | only after the buyer approved in PayPal, which is a client-side tool the chat completes when the store sees the approval |
 
 Free LLM tiers get busy, so each call falls back through `gemini-3.5-flash-lite` (about a second per step) → `gemini-3.8-flash` → Groq `gpt-oss-120b` when a model is overloaded or out of quota, and a model that is out of quota is skipped for 10 minutes ([`src/llm.ts`](src/llm.ts)).
+
+## The merchant console
+
+[`/console`](https://agentbaazar.onrender.com/console) is an [AG Studio](https://www.ag-grid.com/studio/) dashboard over the stores' live data, refreshed on every cart, order and PayPal webhook event:
+
+- **Agent sales, orders to ship, orders**, and a custom **agent cart funnel** widget (cart opened → ready to pay → approved in PayPal → payment authorized → captured on ship) built with AG Charts and Studio's custom-widget API, with cross-filtering.
+- An orders grid with a **Ship** button: it captures the PayPal authorization and posts the tracking number to PayPal.
+- AgentBaazar theme (indigo, madder, the khata palette) with dark mode.
+- An **AI analyst** built on Studio's agent framework: "add a donut chart of agent sales by store" or "which problems did agents run into most often?". It is a custom agent with our own tools: `add_widget` builds a fully configured widget in one call and `summarize` answers from the loaded rows. That keeps a request to about two model calls of ~7 kB, where Studio's built-in team needs ~10 calls of up to 64 kB, which free LLM tiers cannot serve. Studio talks to the model through our adapter ([`src/console/llm-adapter.ts`](src/console/llm-adapter.ts)) and [`/api/console/studio-llm`](app/api/console/studio-llm/route.ts), so no key reaches the browser.
+
+All model calls go through one pool ([`src/llm.ts`](src/llm.ts)) across Gemini 3.5 Flash-Lite, 3.6 Flash, 3.1 Flash-Lite and Gemma 4: each has its own free quota (measured: 3.8 Flash 20 requests a day, 3.6 Flash 5 a minute, Gemma 16k tokens a minute), a model that refuses rests for the time the provider states, and when all are resting the call waits for the soonest.
 
 ## Why it is different
 
@@ -246,7 +257,8 @@ src/merchant/cart/           engine (pure), service (checkout state machine), re
 src/merchant/catalog/        feed parsing (Google, PayPal Enhanced, OpenAI ACP) and import
 src/merchant/paypal/         Orders/Payments client, webhook signature verification
 src/merchant/                webhooks, fulfillment (ship/cancel/refund), discovery
-src/platform/agent/          buyer agent: tools, spending policy, sessions
+src/platform/agent/          buyer agent: tools, spending policy, sessions, web search
+src/console/                 AG Studio console: data, report, theme, custom widget, analyst agent
 src/platform/stores/         agent-platform side: JWT signing, key rotation, cart client
 scripts/                     seed, smoke, import-feed, register-webhook, simulate-webhook
 demo-data/                   three demo stores and their feeds
@@ -256,13 +268,13 @@ demo-data/                   three demo stores and their feeds
 
 - [x] Cart API v1 merchant side, Orders v2 / Payments v2, webhooks, capture-on-ship
 - [x] Buyer agent (Gemini, free tier) that shops any AgentBaazar store through the Cart API: https://agentbaazar.onrender.com/shop
-- [ ] Merchant console: live agent carts and orders, ship/refund
+- [x] Merchant console (AG Studio): live agent carts and orders, ship to capture, AI analyst
 - [ ] Merchant MCP server
 - [x] Hosted demo: https://agentbaazar.onrender.com (Render free tier, kept awake by a scheduled GitHub Action)
 
 ## Stack
 
-Next.js 16 · TypeScript (strict) · Neon Postgres + Drizzle · `@paypal/paypal-server-sdk` · AI SDK 7 + Gemini · zod · jose · Vitest · Biome. Everything runs on free tiers.
+Next.js 16 · TypeScript (strict) · Neon Postgres + Drizzle · `@paypal/paypal-server-sdk` · AI SDK 7 + Gemini/Gemma · AG Studio 3 · Channel3 · zod · jose · Vitest · Biome. Everything runs on free tiers.
 
 ## License
 
