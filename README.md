@@ -51,6 +51,20 @@ The model proposes; **code decides** what money can move ([`src/platform/agent/p
 
 Free LLM tiers get busy, so every call goes through a model pool ([`src/llm.ts`](src/llm.ts)): the buyer agent uses `gemini-3.5-flash-lite` (about a second per step), then `gemini-3.6-flash`, Gemma 4 and Groq `gpt-oss-120b`. A model that refuses for quota or load rests for exactly the time the provider states, and when every model is resting the call waits briefly for the soonest one.
 
+## Any AI assistant: the store's MCP server
+
+Every store also serves an [MCP](https://modelcontextprotocol.io) server at `/api/stores/{store}/mcp`, so Claude Desktop, Cursor or any MCP client can shop it with no agent platform in between. The tools are the Cart API flow: `search_products`, `create_cart`, `apply_fix`, `change_items`, `choose_shipping`, `request_offer`, `get_cart`, `checkout`, `order_status` ([`src/merchant/mcp.ts`](src/merchant/mcp.ts)).
+
+```json
+{
+  "mcpServers": {
+    "patel-textiles": { "command": "npx", "args": ["-y", "mcp-remote", "https://agentbaazar.onrender.com/api/stores/patel-textiles/mcp"] }
+  }
+}
+```
+
+Clients that speak Streamable HTTP can use the URL directly. The assistant cannot spend on its own: when the cart is ready it gets a PayPal `approve_url` for the buyer, and `checkout` only works once the buyer has approved on PayPal's own page. The payment is authorized then and captured when the store ships, the same as for any other caller. The other demo stores are `kaveri-coffee` and `lumen-ceramics`.
+
 ## The merchant console
 
 [`/console`](https://agentbaazar.onrender.com/console) is an [AG Studio](https://www.ag-grid.com/studio/) dashboard over the stores' live data, refreshed on every cart, order and PayPal webhook event:
@@ -220,6 +234,7 @@ All Cart API routes live under `/api/stores/{store}/paypal/v1` and require `Auth
 | GET, PUT | `/merchant-cart/{cartId}` | Cart JWT (only the platform that created the cart) |
 | POST | `/merchant-cart/{cartId}/checkout` | Cart JWT |
 | GET | `/api/stores/{store}/agentic/search?q=&max_price=` | public |
+| POST | `/api/stores/{store}/mcp` (MCP, Streamable HTTP) | public; checkout needs the buyer's PayPal approval |
 | POST | `/api/stores/{store}/agentic/offers` | Cart JWT |
 | GET | `/api/stores/{store}/orders/{orderId}` | Cart JWT (placing platform only) |
 | POST | `/api/stores/{store}/orders/{orderId}/ship`, `/cancel`, `/refund` (refund takes a required `request_id`, so a retry never refunds twice) | `STORE_ADMIN_TOKEN` |
@@ -238,7 +253,7 @@ pnpm lint
 ```
 
 - Unit tests: the cart engine, money math, feed parsing, JWT verification, webhook signature verification, route auth and merchant binding.
-- **Integration tests** ([`src/merchant/integration.test.ts`](src/merchant/integration.test.ts)) run the merchant side against real Postgres with an in-memory PayPal ([`src/test/fake-paypal.ts`](src/test/fake-paypal.ts)) that can decline, return a `DENIED` or `DECLINED` status, authorize a different amount, lose its response after charging, or run a concurrent request mid-charge. Checkout: idempotent replay, compensation, the concurrent-edit 409, resuming after a lost response without a second charge (and 409 while the first attempt still holds its lease), voiding a charge whose reservation was released, a sell-out between validation and reservation. Fulfillment: capture on ship, declined capture, cancel returning stock and coupons exactly once alongside the `VOIDED` webhook, refund idempotency and totals. Webhooks: dashboard refunds, duplicate deliveries, and redelivery of an event whose processing failed half way. Set `TEST_DATABASE_URL` (in `.env.local`) to a throwaway database, such as a Neon branch, to run them; otherwise they are skipped.
+- **Integration tests** ([`src/merchant/integration.test.ts`](src/merchant/integration.test.ts)) run the merchant side against real Postgres with an in-memory PayPal ([`src/test/fake-paypal.ts`](src/test/fake-paypal.ts)) that can decline, return a `DENIED` or `DECLINED` status, authorize a different amount, lose its response after charging, or run a concurrent request mid-charge. Checkout: idempotent replay, compensation, the concurrent-edit 409, resuming after a lost response without a second charge (and 409 while the first attempt still holds its lease), voiding a charge whose reservation was released, a sell-out between validation and reservation. Fulfillment: capture on ship, declined capture, cancel returning stock and coupons exactly once alongside the `VOIDED` webhook, refund idempotency and totals. Webhooks: dashboard refunds, duplicate deliveries, and redelivery of an event whose processing failed half way. MCP: an assistant finds, fixes and buys over the MCP endpoint, and cannot check out before the buyer approves. Set `TEST_DATABASE_URL` (in `.env.local`) to a throwaway database, such as a Neon branch, to run them; otherwise they are skipped.
 - `pnpm smoke`: the end-to-end run against the real sandbox.
 
 ## Security
@@ -258,7 +273,7 @@ src/cart-spec/               Cart API v1 models (zod) + AgentBaazar extensions
 src/merchant/cart/           engine (pure), service (checkout state machine), repo, money
 src/merchant/catalog/        feed parsing (Google, PayPal Enhanced, OpenAI ACP) and import
 src/merchant/paypal/         Orders/Payments client, webhook signature verification
-src/merchant/                webhooks, fulfillment (ship/cancel/refund), discovery
+src/merchant/                webhooks, fulfillment (ship/cancel/refund), discovery, MCP server
 src/platform/agent/          buyer agent: tools, spending policy, sessions, web search
 src/console/                 AG Studio console: data, report, theme, custom widget, analyst agent
 src/platform/stores/         agent-platform side: JWT signing, key rotation, cart client
@@ -271,7 +286,7 @@ demo-data/                   three demo stores and their feeds
 - [x] Cart API v1 merchant side, Orders v2 / Payments v2, webhooks, capture-on-ship
 - [x] Buyer agent (Gemini, free tier) that shops any AgentBaazar store through the Cart API: https://agentbaazar.onrender.com/shop
 - [x] Merchant console (AG Studio): live agent carts and orders, ship to capture, AI analyst
-- [ ] Merchant MCP server
+- [x] Merchant MCP server: any MCP client shops a store directly (`/api/stores/{store}/mcp`)
 - [x] Hosted demo: https://agentbaazar.onrender.com (Render free tier, kept awake by a scheduled GitHub Action)
 
 ## Stack

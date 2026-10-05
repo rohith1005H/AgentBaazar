@@ -487,6 +487,67 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		}
 	});
 
+	it("the store's MCP server: an assistant finds, fixes and buys, but only after the buyer approves", async () => {
+		const { storeMcp } = await import("./mcp");
+		const mcp = storeMcp(await merchant());
+		let id = 0;
+		/** One tools/call over Streamable HTTP (2025-era, stateless); the result's JSON payload. */
+		const call = async (name: string, args: Record<string, unknown>) => {
+			const res = await mcp(
+				new Request("https://shop.test/api/stores/it/mcp", {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						accept: "application/json, text/event-stream",
+						"mcp-protocol-version": "2025-06-18",
+					},
+					body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } }),
+				}),
+			);
+			const data = (await res.text()).split("\n").find((l) => l.startsWith("data: "))!;
+			const { result } = JSON.parse(data.slice(6));
+			return { ...JSON.parse(result.content[0].text), isError: Boolean(result.isError) };
+		};
+
+		const found = await call("search_products", { query: "kurta" });
+		expect(found.products[0].variants.map((v: { variant_id: string }) => v.variant_id)).toContain(INDIGO);
+
+		// Blue is sold out: the store offers its own fix, which the assistant applies.
+		const opened = await call("create_cart", {
+			items: [{ variant_id: BLUE, quantity: 1 }],
+			buyer: {
+				given_name: "Rohan",
+				surname: "Mehta",
+				email: "rohan@example.com",
+				address_line_1: "100 Congress Ave",
+				city: "Austin",
+				state: "TX",
+				postal_code: "78701",
+			},
+		});
+		expect(opened.ready_for_payment).toBe(false);
+		const fix = opened.issues[0].options.findIndex((o: { automatic: boolean }) => o.automatic);
+		const fixed = await call("apply_fix", { cart_id: opened.cart_id, issue: 0, option: fix });
+		expect(fixed.cart.items[0].variant_id).toBe(INDIGO);
+		expect(fixed.cart.payment).toMatchObject({ buyer_approved: false });
+
+		// No order before the buyer approves in PayPal.
+		const early = await call("checkout", { cart_id: opened.cart_id });
+		expect(early.error).toMatch(/not approved/);
+		expect(await ordersFor(new URL(fixed.cart.payment.approve_url).searchParams.get("token")!)).toEqual([]);
+
+		const token = new URL(fixed.cart.payment.approve_url).searchParams.get("token")!;
+		fake.approve(token);
+		await deliver("CHECKOUT.ORDER.APPROVED", { id: token, status: "APPROVED", payer: { payer_id: "PAYER-TEST" } });
+		expect((await call("get_cart", { cart_id: opened.cart_id })).payment.buyer_approved).toBe(true);
+
+		const placed = await call("checkout", { cart_id: opened.cart_id });
+		expect(placed.order.order_id).toMatch(/^AB-/);
+		expect((await call("order_status", { cart_id: opened.cart_id })).status).toBe("AUTHORIZED");
+		// A cart id that does not exist is an error the model can read, not a crash.
+		expect(await call("get_cart", { cart_id: "CART-0000000000000000000000000" })).toMatchObject({ isError: true });
+	});
+
 	describe("a store that captures at checkout (the Store Sync default)", () => {
 		beforeAll(async () => {
 			await db().update(s.merchants).set({ paymentMode: "capture" }).where(eq(s.merchants.id, M));
