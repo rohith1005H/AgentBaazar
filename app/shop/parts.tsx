@@ -55,7 +55,17 @@ function Issues({ cart }: { cart: CartView }) {
 	);
 }
 
-export function ToolEntry({ part, actions, busy }: { part: ToolPart; actions: PartActions; busy: boolean }) {
+export function ToolEntry({
+	part,
+	actions,
+	busy,
+	live,
+}: {
+	part: ToolPart;
+	actions: PartActions;
+	busy: boolean /** in the latest message */;
+	live: boolean;
+}) {
 	const name = part.type.slice("tool-".length);
 	const out = part.output;
 	const err = part.state === "output-error" ? part.errorText : failure(out);
@@ -101,6 +111,8 @@ export function ToolEntry({ part, actions, busy }: { part: ToolPart; actions: Pa
 			);
 		}
 		case "apply_fix": {
+			if (part.state === "approval-requested" && !live)
+				return <Entry>Left unanswered; the agent will ask again.</Entry>;
 			if (part.state === "approval-requested" && part.approval && !part.approval.isAutomatic)
 				return (
 					<FixApproval
@@ -143,6 +155,8 @@ export function ToolEntry({ part, actions, busy }: { part: ToolPart; actions: Pa
 			);
 		}
 		case "request_paypal_approval": {
+			if (part.state === "input-available" && !live)
+				return <Entry>Payment approval set aside; the agent will ask again when the cart is ready.</Entry>;
 			if (part.state === "input-available")
 				return (
 					<PayPalApproval

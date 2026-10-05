@@ -55,3 +55,29 @@ describe("payDecision", () => {
 		expect(payDecision(c, { max_total_cents: 6000 })).toBeUndefined();
 	});
 });
+
+describe("dropUnansweredToolCalls", () => {
+	it("drops questions the buyer never answered and keeps everything else", async () => {
+		const { dropUnansweredToolCalls } = await import("./shopper");
+		const history = [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "a kurta" }] },
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [
+					{ type: "tool-create_cart", state: "output-available", output: {} },
+					{ type: "tool-request_paypal_approval", state: "input-available", input: { cart_id: "CART-1" } },
+					{ type: "tool-apply_fix", state: "approval-requested", input: {} },
+					{ type: "tool-apply_fix", state: "approval-responded", input: {} },
+				],
+			},
+			{ id: "u2", role: "user", parts: [{ type: "text", text: "more offers" }] },
+		];
+		const [, a1] = dropUnansweredToolCalls(history) as typeof history;
+		expect(a1.parts.map((p) => `${p.type}:${(p as { state?: string }).state}`)).toEqual([
+			"tool-create_cart:output-available",
+			"tool-apply_fix:approval-responded",
+		]);
+		expect(dropUnansweredToolCalls(history)[0]).toBe(history[0]);
+	});
+});

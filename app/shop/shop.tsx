@@ -148,7 +148,7 @@ export default function Shop() {
 							</div>
 						)}
 
-						{messages.map((m) =>
+						{messages.map((m, n) =>
 							m.role === "user" ? (
 								<div key={m.id} className="flex justify-end">
 									<p className="max-w-[85%] rounded-2xl rounded-br-sm bg-indigo px-4 py-2.5 text-[16px] leading-6 text-white">
@@ -161,7 +161,15 @@ export default function Shop() {
 										const key = `${m.id}-${i}`;
 										if (p.type === "text") return p.text.trim() ? <Prose key={key} text={p.text} /> : null;
 										if (p.type.startsWith("tool-"))
-											return <ToolEntry key={key} part={p as never} actions={actions} busy={busy} />;
+											return (
+												<ToolEntry
+													key={key}
+													part={p as never}
+													actions={actions}
+													busy={busy}
+													live={n === messages.length - 1}
+												/>
+											);
 										return null;
 									})}
 								</div>

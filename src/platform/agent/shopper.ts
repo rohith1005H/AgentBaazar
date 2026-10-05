@@ -55,3 +55,19 @@ export function shopper(session: Session) {
 }
 
 export type ShopperMessage = UIMessage<never, UIDataTypes, InferUITools<ShopperTools>>;
+
+const UNANSWERED = new Set(["input-streaming", "input-available", "approval-requested"]);
+
+/**
+ * The buyer may type a new message instead of answering a question the agent asked
+ * (approve in PayPal, accept a fix). Models refuse a history with an unanswered tool
+ * call, so drop those calls; the agent asks again when it needs the answer.
+ */
+export function dropUnansweredToolCalls(messages: unknown[]): unknown[] {
+	return messages.map((m) => {
+		const msg = m as { parts?: { type?: string; state?: string }[] };
+		if (!Array.isArray(msg.parts)) return m;
+		const parts = msg.parts.filter((p) => !(p.type?.startsWith("tool-") && UNANSWERED.has(p.state ?? "")));
+		return parts.length === msg.parts.length ? m : { ...msg, parts };
+	});
+}

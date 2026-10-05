@@ -8,7 +8,7 @@ import { createAgentUIStreamResponse } from "ai";
 import { log } from "@/src/log";
 import { HttpError, rateLimit } from "@/src/merchant/api/http";
 import { currentSession } from "@/src/platform/agent/session";
-import { shopper } from "@/src/platform/agent/shopper";
+import { dropUnansweredToolCalls, shopper } from "@/src/platform/agent/shopper";
 
 const MAX_BODY = 400_000;
 const MAX_MESSAGES = 80;
@@ -29,7 +29,7 @@ export async function POST(req: Request) {
 
 		return createAgentUIStreamResponse({
 			agent: shopper(session),
-			uiMessages: messages,
+			uiMessages: dropUnansweredToolCalls(messages),
 			onError: (e) => {
 				const msg = e instanceof Error ? e.message : String(e);
 				log.error({ session: session.id.slice(0, 6), err: msg.slice(0, 300) }, "agent turn failed");
