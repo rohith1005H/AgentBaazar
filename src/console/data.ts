@@ -29,9 +29,11 @@ const orderFields: AgFieldDefinition<ConsoleRegistry>[] = [
 	},
 	{
 		id: "auth_age_hours",
-		name: "Hours since authorization",
+		name: "Hours on hold",
 		format: "decimalFormat",
-		description: "For authorized orders: PayPal authorizations should be captured within 3 days",
+		context: { cellRenderer: "hold-age" },
+		description:
+			"For authorized orders, hours since the buyer approved. PayPal guarantees the funds for 3 days (72 h): ship before then, oldest first",
 	},
 	{ id: "created_at", name: "Placed", format: "dateTimeFormat" },
 	{ id: "captured_at", name: "Captured", format: "dateTimeFormat" },

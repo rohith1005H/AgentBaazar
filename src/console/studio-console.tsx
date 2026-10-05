@@ -71,14 +71,42 @@ function ShipCell({ value }: { value?: string | null }) {
 	);
 }
 
+/** Hours an authorization has been on hold, against PayPal's 3-day honor period. */
+function HoldAgeCell({ value }: { value?: number | null }) {
+	if (value === null || value === undefined) return null;
+	const late = value >= 72;
+	const soon = value >= 48;
+	return (
+		<span
+			title={
+				late
+					? "Past PayPal's 3-day guarantee: capture may fail"
+					: soon
+						? "Ship soon: PayPal guarantees 3 days"
+						: undefined
+			}
+			style={{
+				fontVariantNumeric: "tabular-nums",
+				fontWeight: soon ? 600 : 400,
+				color: late ? "#b4232c" : soon ? "#9a6b00" : undefined,
+			}}
+		>
+			{value.toFixed(1)} h{late ? " · late" : soon ? " · ship soon" : ""}
+		</span>
+	);
+}
+
+const CELLS: Record<string, unknown> = { ship: ShipCell, "hold-age": HoldAgeCell };
+
 /**
- * Ship buttons in grid widgets. In ag-studio 3.0.0 the `overrides` type collapses to `never`
- * once the registry adds a custom widget (ExtractOverride is not distributive over the
- * registry's widget union), so the options are typed here and the override is cast.
+ * Custom cells in grid widgets, picked by the field's `context.cellRenderer`. In ag-studio
+ * 3.0.0 the `overrides` type collapses to `never` once the registry adds a custom widget
+ * (ExtractOverride is not distributive over the registry's widget union), so the options are
+ * typed here and the override is cast.
  */
 const gridOptions: AgGridWidgetOptions = {
 	createCellRenderer: (field: AgWidgetField) =>
-		(field.context as { cellRenderer?: string } | undefined)?.cellRenderer === "ship" ? ShipCell : undefined,
+		CELLS[(field.context as { cellRenderer?: string } | undefined)?.cellRenderer ?? ""],
 };
 
 export default function StudioConsole() {

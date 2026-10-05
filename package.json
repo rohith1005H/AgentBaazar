@@ -18,7 +18,8 @@
     "register-webhook": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/register-webhook.ts",
     "smoke": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/smoke.ts",
     "db:check": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/db-check.ts",
-    "simulate-webhook": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/simulate-webhook.ts"
+    "simulate-webhook": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/simulate-webhook.ts",
+    "demo-orders": "tsx --env-file=.env --env-file-if-exists=.env.local scripts/demo-orders.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "4.0.87",
