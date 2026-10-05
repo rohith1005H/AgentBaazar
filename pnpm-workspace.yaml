@@ -2,4 +2,11 @@ allowBuilds:
   esbuild: true
   sharp: false
   unrs-resolver: false
-
+# AG Studio 3.0 needs AG Grid 36.2 and AG Charts 14.2 exactly; its own ranges are ~.
+overrides:
+  ag-grid-community: 36.2.0
+  ag-grid-enterprise: 36.2.0
+  ag-grid-react: 36.2.0
+  ag-stack: 36.2.0
+  ag-charts-community: 14.2.0
+  ag-charts-enterprise: 14.2.0

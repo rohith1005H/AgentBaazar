@@ -33,3 +33,14 @@ describe("relevant (web results)", () => {
 		expect(relevant("terracotta planters", planters)).toHaveLength(2);
 	});
 });
+
+describe("retryAfterMs (LLM cooldown)", () => {
+	it("reads Gemini's retry hint, within bounds", async () => {
+		const { retryAfterMs } = await import("@/src/llm");
+		expect(retryAfterMs("Quota exceeded ... Please retry in 12.8025s.")).toBe(12_802.5);
+		expect(retryAfterMs("Please retry in 10h41m45.8s")).toBe(38_505_800);
+		expect(retryAfterMs("Please retry in 30h")).toBe(12 * 3_600_000);
+		expect(retryAfterMs("Please retry in 1.2s")).toBe(5_000);
+		expect(retryAfterMs("model overloaded")).toBe(60_000);
+	});
+});
