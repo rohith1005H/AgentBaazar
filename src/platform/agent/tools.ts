@@ -14,6 +14,7 @@ import { toCents } from "@/src/merchant/cart/money";
 import { cartClient, type Reply } from "@/src/platform/stores/cart-client";
 import { applyCoupon, applyPatch, requestFromCart } from "./patch";
 import { enabledStores, type Session, saveSessionCart, sessionCart, setMandate, storeRef } from "./session";
+import { searchWeb, webSearchEnabled } from "./web-search";
 
 // ---------------------------------------------------------------- views
 
@@ -163,6 +164,23 @@ export function shopperTools(session: Session) {
 			},
 		}),
 
+		search_web: tool({
+			description:
+				"Search other online shops (Channel3) for the same kind of product, to show the buyer what else is out there. You cannot buy these: those shops have no agent checkout, so the buyer opens them on the shop's site.",
+			inputSchema: z.object({
+				product_type: z
+					.string()
+					.min(2)
+					.max(40)
+					.describe(
+						'Just the kind of product in 1-3 words, no colour, size or price, e.g. "kurta", "terracotta planter"',
+					),
+			}),
+			execute: async ({ product_type }) => ({
+				results: webSearchEnabled() ? await searchWeb(product_type) : [],
+			}),
+		}),
+
 		search_stores: tool({
 			description:
 				"Search every AgentBaazar store's catalog. Returns products with their variants (color/size), prices and availability. Use the buyer's words as the query.",
@@ -176,9 +194,12 @@ export function shopperTools(session: Session) {
 			}),
 			execute: async ({ query, max_price }) => {
 				const all = await enabledStores();
-				const replies = await Promise.all(
-					all.map((s) => cartClient(s).search(query, max_price ? toCents(max_price) : undefined)),
-				);
+				// One slow or broken store must not hide the others' results.
+				const replies = (
+					await Promise.allSettled(
+						all.map((s) => cartClient(s).search(query, max_price ? toCents(max_price) : undefined)),
+					)
+				).flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 				const results: ProductView[] = replies.flatMap((r) => {
 					if (!r.ok) return [];
 					const { store, products } = r.body as import("@/src/platform/stores/cart-client").SearchResult;

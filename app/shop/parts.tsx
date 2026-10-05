@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { CartView, ProductView } from "@/src/platform/agent/tools";
+import type { WebProductView } from "@/src/platform/agent/web-search";
 
 type ToolPart = {
 	type: string;
@@ -96,6 +97,11 @@ export function ToolEntry({
 					{results.length > 0 && <Products results={results} pick={actions.pick} disabled={busy} />}
 				</div>
 			);
+		}
+		case "search_web": {
+			if (running) return null; // runs alongside the store search
+			const results = (out as { results: WebProductView[] }).results;
+			return results.length ? <ElsewhereOnTheWeb results={results} /> : null;
 		}
 		case "create_cart": {
 			if (running) return <Entry tone="busy">Opening a cart at the store…</Entry>;
@@ -383,6 +389,41 @@ function OrderPlaced({ cart }: { cart: CartView }) {
 					View the order
 				</a>
 			)}
+		</div>
+	);
+}
+
+/**
+ * Real listings from other shops (Channel3). Not buyable by the agent: those shops have
+ * no agent checkout, which is exactly the gap AgentBaazar closes for small stores.
+ */
+function ElsewhereOnTheWeb({ results }: { results: WebProductView[] }) {
+	return (
+		<div className="py-1">
+			<p className="mt-1 text-[13px] text-ink/55">
+				Elsewhere on the web, for comparison. These shops have no agent checkout, so they open on their own site.
+			</p>
+			<ul className="mt-2 flex gap-2 overflow-x-auto pb-1">
+				{results.map((r) => (
+					<li key={r.url} className="w-44 shrink-0">
+						<a
+							href={r.url}
+							target="_blank"
+							rel="noopener noreferrer nofollow"
+							className="block rounded-lg border border-rule bg-white p-2 hover:border-ink/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo"
+						>
+							{r.image_url && (
+								// biome-ignore lint/performance/noImgElement: third-party product images
+								<img src={r.image_url} alt="" loading="lazy" className="h-24 w-full rounded bg-paper object-contain" />
+							)}
+							<p className="mt-1.5 line-clamp-2 text-[13px] leading-snug text-ink">{r.title}</p>
+							<p className="mt-0.5 text-[12px] text-ink/55">
+								<span className="font-mono tabular-nums text-ink">{r.price}</span> · {r.shop}
+							</p>
+						</a>
+					</li>
+				))}
+			</ul>
 		</div>
 	);
 }

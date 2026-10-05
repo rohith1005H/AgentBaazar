@@ -32,22 +32,37 @@ function busy(e: unknown): boolean {
 	return /high demand|overloaded|quota|exhausted|unavailable|rate limit/i.test(String((e as Error)?.message ?? e));
 }
 
+/**
+ * After a model refuses, skip it for a while instead of waiting for it to refuse again on
+ * every step: 10 minutes when out of quota, 1 minute when merely overloaded.
+ * ponytail: per-instance memory; fine for one Render instance.
+ */
+const restingUntil = new Map<string, number>();
+const resting = (id: string) => (restingUntil.get(id) ?? 0) > Date.now();
+function rest(id: string, e: unknown) {
+	const quota = /quota|exhausted/i.test(String((e as Error)?.message ?? e));
+	restingUntil.set(id, Date.now() + (quota ? 10 : 1) * 60_000);
+	log.warn({ from: id, quota, err: String((e as Error).message).slice(0, 120) }, "LLM busy, falling back");
+}
+
 const fallbackTo = (next: ReturnType<typeof model>, from: string): LanguageModelMiddleware => ({
 	wrapGenerate: async ({ doGenerate, params }) => {
+		if (resting(from)) return next.doGenerate(params);
 		try {
 			return await doGenerate();
 		} catch (e) {
 			if (!busy(e)) throw e;
-			log.warn({ from, to: next.modelId, err: String((e as Error).message).slice(0, 120) }, "LLM busy, falling back");
+			rest(from, e);
 			return next.doGenerate(params);
 		}
 	},
 	wrapStream: async ({ doStream, params }) => {
+		if (resting(from)) return next.doStream(params);
 		try {
 			return await doStream();
 		} catch (e) {
 			if (!busy(e)) throw e;
-			log.warn({ from, to: next.modelId, err: String((e as Error).message).slice(0, 120) }, "LLM busy, falling back");
+			rest(from, e);
 			return next.doStream(params);
 		}
 	},
