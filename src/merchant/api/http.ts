@@ -180,9 +180,9 @@ const buckets = new Map<string, { tokens: number; at: number }>();
 let lastPrune = 0;
 
 /**
- * The client's IP for rate limiting. Edge-set headers first (Cloudflare and Render's proxy
- * set these and overwrite client values); X-Forwarded-For only as a fallback, since its
- * first hop is whatever the client sent.
+ * The client's IP for rate limiting. Edge-set headers first: on Render, Cloudflare sets
+ * cf-connecting-ip and true-client-ip (verified 2026-10-05; X-Forwarded-For has 3 hops there).
+ * X-Forwarded-For only as a fallback, since its first hop is whatever the client sent.
  */
 export function clientIp(req: Request): string {
 	const h = req.headers;
