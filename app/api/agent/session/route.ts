@@ -1,8 +1,17 @@
 /** The buyer's session (created on first visit): who the agent shops for, and their budget. */
+import { log } from "@/src/log";
 import { route } from "@/src/merchant/api/http";
 import { currentSession } from "@/src/platform/agent/session";
 
-export const GET = route(async () => {
+export const GET = route(async ({ req }) => {
+	// TEMP diagnostic: which client-IP headers this host provides (names and hop count only).
+	log.info(
+		{
+			ipHeaders: ["cf-connecting-ip", "true-client-ip", "x-real-ip"].filter((h) => req.headers.has(h)),
+			xffHops: req.headers.get("x-forwarded-for")?.split(",").length ?? 0,
+		},
+		"ip headers",
+	);
 	const s = await currentSession({ create: true });
 	const a = s.profile.shipping_address;
 	return {

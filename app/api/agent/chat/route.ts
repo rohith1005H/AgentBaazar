@@ -6,7 +6,7 @@
  */
 import { createAgentUIStreamResponse } from "ai";
 import { log } from "@/src/log";
-import { HttpError, rateLimit } from "@/src/merchant/api/http";
+import { clientIp, HttpError, rateLimit } from "@/src/merchant/api/http";
 import { currentSession } from "@/src/platform/agent/session";
 import { dropUnansweredToolCalls, shopper } from "@/src/platform/agent/shopper";
 
@@ -23,9 +23,11 @@ export async function POST(req: Request) {
 			throw new HttpError(400, { name: "INVALID_REQUEST", message: "messages must be a non-empty array (max 80)" });
 
 		const session = await currentSession({ create: false });
-		const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
 		rateLimit(`agent:session:${session.id}`, { capacity: 15, refillPerSec: 1 / 20 });
-		rateLimit(`agent:ip:${ip}`, { capacity: 40, refillPerSec: 1 / 10 });
+		rateLimit(`agent:ip:${clientIp(req)}`, { capacity: 40, refillPerSec: 1 / 10 });
+		// One ceiling for everyone: the free LLM quota is shared, so no visitor rotating
+		// sessions or headers can drain it during judging. ~30 turns a minute.
+		rateLimit("agent:all", { capacity: 60, refillPerSec: 1 / 2 });
 
 		return createAgentUIStreamResponse({
 			agent: shopper(session),

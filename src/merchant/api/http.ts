@@ -86,6 +86,8 @@ export function storeRoute<P extends { store: string }>(handler: AuthedHandler<P
 		// busy platform's buyers do not share a single bucket.
 		const sid = typeof caller.payload.sid === "string" ? caller.payload.sid.slice(0, 64) : "";
 		rateLimit(`${merchant.id}:${caller.subject}:${sid}`);
+		// `sid` is minted by the caller, so the platform as a whole also has a (larger) ceiling.
+		rateLimit(`${merchant.id}:${caller.subject}`, { capacity: 1200, refillPerSec: 20 });
 		return handler({ req, params, requestId, caller, merchant });
 	});
 }
@@ -175,10 +177,30 @@ function failure(e: unknown, requestId: string, req: Request): Response {
 // ponytail: in-memory token bucket per caller on a single instance; move to Redis/Postgres if we ever scale out.
 const BUCKET = { capacity: 120, refillPerSec: 2 };
 const buckets = new Map<string, { tokens: number; at: number }>();
+let lastPrune = 0;
+
+/**
+ * The client's IP for rate limiting. Edge-set headers first (Cloudflare and Render's proxy
+ * set these and overwrite client values); X-Forwarded-For only as a fallback, since its
+ * first hop is whatever the client sent.
+ */
+export function clientIp(req: Request): string {
+	const h = req.headers;
+	return (
+		h.get("cf-connecting-ip") ??
+		h.get("true-client-ip") ??
+		h.get("x-real-ip") ??
+		h.get("x-forwarded-for")?.split(",").at(-1)?.trim() ??
+		"local"
+	);
+}
 
 export function rateLimit(key: string, bucket: { capacity: number; refillPerSec: number } = BUCKET) {
 	const now = Date.now();
-	if (buckets.size > 10_000) for (const [k, b] of buckets) if (now - b.at > 10 * 60_000) buckets.delete(k);
+	if (buckets.size > 10_000 && now - lastPrune > 60_000) {
+		lastPrune = now;
+		for (const [k, b] of buckets) if (now - b.at > 10 * 60_000) buckets.delete(k);
+	}
 	const b = buckets.get(key) ?? { tokens: bucket.capacity, at: now };
 	b.tokens = Math.min(bucket.capacity, b.tokens + ((now - b.at) / 1000) * bucket.refillPerSec);
 	b.at = now;
