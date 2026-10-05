@@ -45,6 +45,8 @@ export function shopper(session: Session) {
 		instructions: instructions(session),
 		tools,
 		stopWhen: isStepCount(12),
+		// Shopping steps are short decisions; deep thinking only adds latency.
+		providerOptions: { google: { thinkingConfig: { thinkingLevel: "low" } } },
 		toolApproval: {
 			apply_fix: async ({ cart_id, issue, option }) =>
 				fixDecision((await sessionCart(session.id, cart_id).catch(() => undefined))?.cart, issue, option),

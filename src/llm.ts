@@ -1,7 +1,7 @@
 /**
  * LLM selection by role. Everything here is on a no-card free tier.
  *
- *   LLM_BUYER_MODEL    first choice for the shopping agent loop   (default gemini-3.8-flash)
+ *   LLM_BUYER_MODEL    first choice for the shopping agent loop   (default gemini-3.5-flash-lite)
  *   LLM_CONSOLE_MODEL  first choice for console/Studio/ops agents (default gemini-3.5-flash-lite)
  *
  * Free tiers are flaky at busy hours (Gemini answers 503 "high demand" or 429), so each
@@ -16,7 +16,9 @@ import { log } from "@/src/log";
 export type LlmRole = "buyer" | "console";
 
 const CHAINS: Record<LlmRole, string[]> = {
-	buyer: [process.env.LLM_BUYER_MODEL || "gemini-3.8-flash", "gemini-3.5-flash-lite", "groq:openai/gpt-oss-120b"],
+	// Flash-Lite first: about 1 s per agent step and a large free quota. 3.8 Flash thinks for
+	// 20 s+ per step and its free daily quota runs out in an afternoon of testing.
+	buyer: [process.env.LLM_BUYER_MODEL || "gemini-3.5-flash-lite", "gemini-3.8-flash", "groq:openai/gpt-oss-120b"],
 	console: [process.env.LLM_CONSOLE_MODEL || "gemini-3.5-flash-lite", "gemini-3.8-flash", "groq:openai/gpt-oss-120b"],
 };
 

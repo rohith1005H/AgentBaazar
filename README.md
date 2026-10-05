@@ -48,7 +48,7 @@ The model proposes; **code decides** what money can move ([`src/platform/agent/p
 | pay without a budget, or above it | refused, whatever the prompt says |
 | pay at all | only after the buyer approved in PayPal, which is a client-side tool the chat completes when the store sees the approval |
 
-Free LLM tiers get busy, so each call falls back through `gemini-3.8-flash` → `gemini-3.5-flash-lite` → Groq `gpt-oss-120b` when a model is overloaded or out of quota ([`src/llm.ts`](src/llm.ts)).
+Free LLM tiers get busy, so each call falls back through `gemini-3.5-flash-lite` (about a second per step) → `gemini-3.8-flash` → Groq `gpt-oss-120b` when a model is overloaded or out of quota, and a model that is out of quota is skipped for 10 minutes ([`src/llm.ts`](src/llm.ts)).
 
 ## Why it is different
 
