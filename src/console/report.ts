@@ -2,7 +2,7 @@ import type { AgReportState } from "ag-studio";
 import type { ConsoleRegistry } from "./registry";
 
 /** Bump when DEFAULT_REPORT changes so stale saved copies are discarded. */
-export const REPORT_KEY = "ab.console.report.v3";
+export const REPORT_KEY = "ab.console.report.v4";
 
 const title = (text: string) => ({ title: { enabled: true, text } });
 
@@ -56,6 +56,7 @@ export const DEFAULT_REPORT: AgReportState<ConsoleRegistry> = {
 							{ id: "orders.total", aggregation: "sum" },
 							{ id: "orders.coupon" },
 							{ id: "orders.created_at" },
+							{ id: "orders.auth_age_hours", aggregation: "max" },
 							{ id: "orders.ship" },
 						],
 					},

@@ -61,7 +61,7 @@ export async function consoleData(): Promise<ConsoleData> {
 			store: storeName.get(o.merchantId) ?? o.merchantId,
 			status: o.status,
 			total: dollars(o.totalCents),
-			coupon: o.couponCodes?.[0]?.replace(/-[A-Z0-9]+$/, "") ?? null,
+			coupon: o.couponCodes?.[0]?.replace(/-[A-Z0-9]+$/, "") ?? "No coupon",
 			awaiting_ship: o.status === "AUTHORIZED" ? 1 : 0,
 			auth_age_hours:
 				o.status === "AUTHORIZED" ? Math.round(((now - o.createdAt.getTime()) / 3_600_000) * 10) / 10 : null,
