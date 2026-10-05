@@ -27,9 +27,11 @@ export async function signCartJwt(
 	merchantId: string,
 	issuer: string,
 	ttlSeconds = 600,
+	/** Opaque per-buyer-session id, so the store can rate limit buyers separately */
+	sid?: string,
 ): Promise<string> {
 	const pk = await importJWK(key.privateJwk, "RS256");
-	return new SignJWT({ merchant_id: merchantId, scope: ["cart"] })
+	return new SignJWT({ merchant_id: merchantId, scope: ["cart"], ...(sid && { sid }) })
 		.setProtectedHeader({ alg: "RS256", kid: key.kid, typ: "JWT" })
 		.setIssuer(issuer)
 		.setAudience(merchantId)

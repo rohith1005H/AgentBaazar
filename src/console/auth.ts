@@ -11,9 +11,16 @@ import { HttpError } from "@/src/merchant/api/http";
 const COOKIE = "ab_console";
 const WEEK_S = 7 * 24 * 3600;
 
+/** A session token: expiry (unix seconds) plus an HMAC over it. */
+export const consoleToken = (expSeconds: number) => `${expSeconds}.${signLink(`console:${expSeconds}`)}`;
+
+export function validConsoleToken(token: string, nowSeconds = Date.now() / 1000): boolean {
+	const [exp, sig] = token.split(".");
+	return /^\d+$/.test(exp ?? "") && Number(exp) > nowSeconds && verifyLink(`console:${exp}`, sig);
+}
+
 export async function consoleAuthorized(): Promise<boolean> {
-	const [exp, sig] = ((await cookies()).get(COOKIE)?.value ?? "").split(".");
-	return Number(exp) > Date.now() / 1000 && verifyLink(`console:${exp}`, sig);
+	return validConsoleToken((await cookies()).get(COOKIE)?.value ?? "");
 }
 
 export async function requireConsole(): Promise<void> {
@@ -30,8 +37,7 @@ export function passwordMatches(given: string): boolean {
 }
 
 export async function startConsoleSession(): Promise<void> {
-	const exp = Math.floor(Date.now() / 1000) + WEEK_S;
-	(await cookies()).set(COOKIE, `${exp}.${signLink(`console:${exp}`)}`, {
+	(await cookies()).set(COOKIE, consoleToken(Math.floor(Date.now() / 1000) + WEEK_S), {
 		httpOnly: true,
 		sameSite: "lax",
 		secure: process.env.NODE_ENV === "production",

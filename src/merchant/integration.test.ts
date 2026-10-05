@@ -461,6 +461,32 @@ ${BEANS},${M}-beans,"Coffee Beans","Estate coffee beans used by integration test
 		expect(e.body.business_context).toMatchObject({ code: "INVENTORY_ISSUE" });
 	});
 
+	it("a buyer session can only reach the carts it opened", async () => {
+		const { saveSessionCart, sessionCart } = await import("@/src/platform/agent/session");
+		const [a, b] = [`sa-${M}`, `sb-${M}`];
+		await db()
+			.insert(s.stores)
+			.values({ id: M, name: "Integration Store", baseUrl: "https://shop.test/api/stores/it/paypal/v1", merchantId: M })
+			.onConflictDoNothing();
+		await db()
+			.insert(s.sessions)
+			.values([{ id: a }, { id: b }]);
+		try {
+			const { cart } = await readyCart();
+			await saveSessionCart(a, M, cart);
+			expect((await sessionCart(a, cart.id!)).cartId).toBe(cart.id);
+			await expect(sessionCart(b, cart.id!)).rejects.toThrow(/Unknown cart/);
+		} finally {
+			await db()
+				.delete(s.sessionCarts)
+				.where(inArray(s.sessionCarts.sessionId, [a, b]));
+			await db()
+				.delete(s.sessions)
+				.where(inArray(s.sessions.id, [a, b]));
+			await db().delete(s.stores).where(eq(s.stores.id, M));
+		}
+	});
+
 	describe("a store that captures at checkout (the Store Sync default)", () => {
 		beforeAll(async () => {
 			await db().update(s.merchants).set({ paymentMode: "capture" }).where(eq(s.merchants.id, M));

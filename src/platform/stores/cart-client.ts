@@ -17,7 +17,8 @@ export type Reply<T> = { status: number; ok: boolean; body: T | ApiError };
 
 const issuer = () => process.env.JWT_ISSUER || publicUrl();
 
-export function cartClient(store: StoreRef) {
+/** `sid`: an opaque id for the buyer session making the calls (see signCartJwt). */
+export function cartClient(store: StoreRef, sid?: string) {
 	// `baseUrl` is the store's Cart API root, e.g. https://host/api/stores/{store}/paypal/v1;
 	// our agentic extensions (search, offers, orders) live one level up.
 	const cartRoot = store.baseUrl.replace(/\/$/, "");
@@ -26,7 +27,7 @@ export function cartClient(store: StoreRef) {
 	const call = async <T>(method: string, url: string, body?: unknown, auth = true): Promise<Reply<T>> => {
 		const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
 		if (auth)
-			headers.Authorization = `Bearer ${await signCartJwt(await activeSigningKey(), store.merchantId, issuer())}`;
+			headers.Authorization = `Bearer ${await signCartJwt(await activeSigningKey(), store.merchantId, issuer(), 600, sid)}`;
 		const res = await fetch(url, {
 			method,
 			headers,

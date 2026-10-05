@@ -99,7 +99,7 @@ async function pooled<T>(
 		}
 		const soonest = Math.min(...chain.map((m) => restingUntil.get(m.modelId) ?? 0)) - Date.now();
 		if (soonest > MAX_WAIT_MS[role]) break;
-		await new Promise((r) => setTimeout(r, Math.max(soonest, 1_000)));
+		await new Promise((r) => setTimeout(r, Math.max(soonest, 1_000) + Math.random() * 2_000));
 	}
 	throw new Error("All free AI models are busy (rate limit); try again in a minute");
 }

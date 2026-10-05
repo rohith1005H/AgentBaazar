@@ -13,7 +13,7 @@ import type { ApiError, Money, PayPalCart, ValidationIssue } from "@/src/cart-sp
 import { toCents } from "@/src/merchant/cart/money";
 import { cartClient, type Reply } from "@/src/platform/stores/cart-client";
 import { applyCoupon, applyPatch, requestFromCart } from "./patch";
-import { enabledStores, type Session, saveSessionCart, sessionCart, setMandate, storeRef } from "./session";
+import { enabledStores, type Session, saveSessionCart, sessionCart, sessionTag, setMandate, storeRef } from "./session";
 import { searchWeb, webSearchEnabled } from "./web-search";
 
 // ---------------------------------------------------------------- views
@@ -131,11 +131,12 @@ const Items = z
 // ---------------------------------------------------------------- tools
 
 export function shopperTools(session: Session) {
+	const sid = sessionTag(session);
 	/** PUT the full next version of a cart this session owns, and remember the answer. */
 	async function put(cartId: string, next: (cart: PayPalCart) => ReturnType<typeof requestFromCart>) {
 		const sc = await sessionCart(session.id, cartId);
 		const store = await storeRef(sc.storeId);
-		const cart = asCart(await cartClient(store).update(cartId, next(sc.cart)));
+		const cart = asCart(await cartClient(store, sid).update(cartId, next(sc.cart)));
 		if (failed(cart)) return cart;
 		await saveSessionCart(session.id, sc.storeId, cart);
 		return cartView(sc.storeId, cart);
@@ -197,7 +198,7 @@ export function shopperTools(session: Session) {
 				// One slow or broken store must not hide the others' results.
 				const replies = (
 					await Promise.allSettled(
-						all.map((s) => cartClient(s).search(query, max_price ? toCents(max_price) : undefined)),
+						all.map((s) => cartClient(s, sid).search(query, max_price ? toCents(max_price) : undefined)),
 					)
 				).flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 				const results: ProductView[] = replies.flatMap((r) => {
@@ -231,7 +232,7 @@ export function shopperTools(session: Session) {
 				const store = await storeRef(store_id);
 				const p = session.profile;
 				const cart = asCart(
-					await cartClient(store).create({
+					await cartClient(store, sid).create({
 						items,
 						customer: { name: p.name, email_address: p.email_address },
 						shipping_address: p.shipping_address,
@@ -290,7 +291,7 @@ export function shopperTools(session: Session) {
 			inputSchema: z.object({ cart_id: z.string() }),
 			execute: async ({ cart_id }) => {
 				const sc = await sessionCart(session.id, cart_id);
-				const r = await cartClient(await storeRef(sc.storeId)).offer(cart_id, "first order");
+				const r = await cartClient(await storeRef(sc.storeId), sid).offer(cart_id, "first order");
 				const body = r.body as { offer?: { code: string; description: string } | null; reason?: string };
 				if (!r.ok || !body.offer) return { offer: null, reason: body.reason ?? "No offer available" };
 				const code = body.offer.code;
@@ -314,7 +315,7 @@ export function shopperTools(session: Session) {
 			inputSchema: z.object({ cart_id: z.string() }),
 			execute: async ({ cart_id }) => {
 				const sc = await sessionCart(session.id, cart_id);
-				const api = cartClient(await storeRef(sc.storeId));
+				const api = cartClient(await storeRef(sc.storeId), sid);
 				// The store's GET shows the payer once PayPal confirmed the approval.
 				const current = asCart(await api.get(cart_id));
 				if (failed(current)) return current;
@@ -342,7 +343,7 @@ export function shopperTools(session: Session) {
 				const sc = await sessionCart(session.id, cart_id);
 				const orderId = sc.cart.payment_confirmation?.merchant_order_number;
 				if (!orderId) return { error: "This cart has not been checked out yet." };
-				const r = await cartClient(await storeRef(sc.storeId)).order(orderId);
+				const r = await cartClient(await storeRef(sc.storeId), sid).order(orderId);
 				return r.ok ? r.body : { error: (r.body as ApiError).message };
 			},
 		}),

@@ -6,10 +6,12 @@
  *   - fixes that cost more, accept a back-order or pre-order, or empty the cart wait for
  *     the buyer's explicit yes (AI SDK tool approval); "go to the store" fixes are refused
  *   - nothing is paid above the buyer's budget, and only after the buyer approved in PayPal
+ *   - the budget itself comes from the buyer's own words, or the buyer is asked
  */
-import { type InferUITools, isStepCount, ToolLoopAgent, type UIDataTypes, type UIMessage } from "ai";
+import { type InferUITools, isStepCount, type ModelMessage, ToolLoopAgent, type UIDataTypes, type UIMessage } from "ai";
 import { llm } from "@/src/llm";
-import { fixDecision, payDecision } from "./policy";
+import { toCents } from "@/src/merchant/cart/money";
+import { budgetDecision, fixDecision, payDecision } from "./policy";
 import type { Session } from "./session";
 import { sessionCart } from "./session";
 import { type ShopperTools, shopperTools } from "./tools";
@@ -49,10 +51,21 @@ export function shopper(session: Session) {
 		toolApproval: {
 			apply_fix: async ({ cart_id, issue, option }) =>
 				fixDecision((await sessionCart(session.id, cart_id).catch(() => undefined))?.cart, issue, option),
+			set_budget: ({ max_total }, { messages }) =>
+				budgetDecision(toCents(max_total), session.mandate, buyerTexts(messages)),
 			complete_checkout: async ({ cart_id }) =>
 				payDecision((await sessionCart(session.id, cart_id).catch(() => undefined))?.cart, session.mandate),
 		},
 	});
+}
+
+/** What the buyer typed (user messages only), for the budget rule. */
+function buyerTexts(messages: readonly ModelMessage[]): string[] {
+	return messages
+		.filter((m) => m.role === "user")
+		.map((m) =>
+			typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "")).join(" "),
+		);
 }
 
 export type ShopperMessage = UIMessage<never, UIDataTypes, InferUITools<ShopperTools>>;

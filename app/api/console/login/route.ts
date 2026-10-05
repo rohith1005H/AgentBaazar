@@ -13,8 +13,8 @@ export async function POST(req: Request) {
 		if (e instanceof HttpError) return seeOther("/console/login?error=wait");
 		throw e;
 	}
-	const form = await req.formData();
-	if (!passwordMatches(String(form.get("password") ?? ""))) return seeOther("/console/login?error=password");
+	const form = await req.formData().catch(() => null);
+	if (!form || !passwordMatches(String(form.get("password") ?? ""))) return seeOther("/console/login?error=password");
 	await startConsoleSession();
 	return seeOther("/console");
 }

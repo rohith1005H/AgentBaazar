@@ -16,6 +16,15 @@ const bus = g.__abBus;
 export const publish = (e: StoreEvent) => bus.emit("event", e);
 
 export function subscribe(fn: (e: StoreEvent) => void): () => void {
-	bus.on("event", fn);
-	return () => bus.off("event", fn);
+	// publish() runs inside checkout and webhook handlers after their writes commit; a broken
+	// listener (say a closed SSE stream) must not turn that into an error.
+	const safe = (e: StoreEvent) => {
+		try {
+			fn(e);
+		} catch {
+			bus.off("event", safe);
+		}
+	};
+	bus.on("event", safe);
+	return () => bus.off("event", safe);
 }

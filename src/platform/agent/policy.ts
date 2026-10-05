@@ -42,3 +42,27 @@ export function payDecision(cart: PayPalCart | undefined, mandate: Mandate | nul
 		};
 	return undefined;
 }
+
+/**
+ * Money amounts the buyer wrote: "$60", "60 dollars", "60 usd", "budget is 60". Bare numbers
+ * do not count, so ids or quantities ("planter-500", "2 bags") are never read as a budget.
+ */
+export function buyerAmounts(text: string): number[] {
+	const out: number[] = [];
+	const add = (n: string) => out.push(Math.round(Number(n.replace(",", "")) * 100));
+	for (const m of text.matchAll(/\$\s?(\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?)/g)) add(m[1]);
+	for (const m of text.matchAll(/(\d{1,6}(?:\.\d{1,2})?)\s?(?:dollars|usd|bucks)\b/gi)) add(m[1]);
+	for (const m of text.matchAll(/budget[^.\d$]{0,20}(\d{1,6}(?:\.\d{1,2})?)/gi)) add(m[1]);
+	return out;
+}
+
+/**
+ * A budget comes from the buyer. Lowering it is always fine; setting or raising it is fine
+ * when the buyer wrote that amount; otherwise (say a product title told the model to) the
+ * buyer is asked.
+ */
+export function budgetDecision(maxTotalCents: number, current: Mandate | null, buyerTexts: string[]): Decision {
+	if (current && maxTotalCents <= current.max_total_cents) return undefined;
+	if (buyerTexts.some((t) => buyerAmounts(t).includes(maxTotalCents))) return undefined;
+	return { type: "user-approval", reason: `Set your budget to $${(maxTotalCents / 100).toFixed(2)}?` };
+}

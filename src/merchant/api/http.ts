@@ -82,7 +82,10 @@ export function storeRoute<P extends { store: string }>(handler: AuthedHandler<P
 		if (!merchant) throw notFound("STORE_NOT_FOUND", `Store '${params.store}' does not exist`);
 		if (caller.merchantId !== merchant.id && caller.merchantId !== merchant.paypalMerchantId)
 			throw new AuthError("Token was issued for a different merchant", 403);
-		rateLimit(`${merchant.id}:${caller.subject}`);
+		// Per caller, and per buyer session when the platform says which one (`sid`), so one
+		// busy platform's buyers do not share a single bucket.
+		const sid = typeof caller.payload.sid === "string" ? caller.payload.sid.slice(0, 64) : "";
+		rateLimit(`${merchant.id}:${caller.subject}:${sid}`);
 		return handler({ req, params, requestId, caller, merchant });
 	});
 }
@@ -175,6 +178,7 @@ const buckets = new Map<string, { tokens: number; at: number }>();
 
 export function rateLimit(key: string, bucket: { capacity: number; refillPerSec: number } = BUCKET) {
 	const now = Date.now();
+	if (buckets.size > 10_000) for (const [k, b] of buckets) if (now - b.at > 10 * 60_000) buckets.delete(k);
 	const b = buckets.get(key) ?? { tokens: bucket.capacity, at: now };
 	b.tokens = Math.min(bucket.capacity, b.tokens + ((now - b.at) / 1000) * bucket.refillPerSec);
 	b.at = now;

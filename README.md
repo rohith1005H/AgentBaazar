@@ -45,10 +45,11 @@ The model proposes; **code decides** what money can move ([`src/platform/agent/p
 | swap to an equivalent in-stock item at the same or lower price | applied automatically |
 | accept a higher price, a back-order or a pre-order, or remove the last item | waits for the buyer's **Accept** (AI SDK tool approval) |
 | send the buyer to the store's site, or contact support | refused; the agent explains |
+| set or raise the budget | allowed only if the buyer wrote that amount; otherwise the buyer is asked |
 | pay without a budget, or above it | refused, whatever the prompt says |
 | pay at all | only after the buyer approved in PayPal, which is a client-side tool the chat completes when the store sees the approval |
 
-Free LLM tiers get busy, so each call falls back through `gemini-3.5-flash-lite` (about a second per step) → `gemini-3.8-flash` → Groq `gpt-oss-120b` when a model is overloaded or out of quota, and a model that is out of quota is skipped for 10 minutes ([`src/llm.ts`](src/llm.ts)).
+Free LLM tiers get busy, so every call goes through a model pool ([`src/llm.ts`](src/llm.ts)): the buyer agent uses `gemini-3.5-flash-lite` (about a second per step), then `gemini-3.6-flash`, Gemma 4 and Groq `gpt-oss-120b`. A model that refuses for quota or load rests for exactly the time the provider states, and when every model is resting the call waits briefly for the soonest one.
 
 ## The merchant console
 

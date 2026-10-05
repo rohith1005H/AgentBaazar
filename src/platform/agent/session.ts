@@ -6,7 +6,7 @@
  * cart the agent touches is checked against this session, so one buyer's agent can
  * never read or pay another buyer's cart.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { cookies } from "next/headers";
 import type { Address, PayPalCart } from "@/src/cart-spec/schema";
@@ -23,6 +23,10 @@ export type Profile = {
 	shipping_address: Address;
 };
 export type Session = { id: string; mandate: Mandate | null; profile: Profile };
+
+/** What stores see of a session: a hash, never the cookie value. */
+export const sessionTag = (s: Pick<Session, "id">) =>
+	createHash("sha256").update(`sid:${s.id}`).digest("base64url").slice(0, 16);
 
 /** A demo buyer in Austin; a real platform would use the signed-in account's saved address. */
 const demoProfile = (id: string): Profile => ({

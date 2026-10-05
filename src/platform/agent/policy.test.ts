@@ -81,3 +81,23 @@ describe("dropUnansweredToolCalls", () => {
 		expect(dropUnansweredToolCalls(history)[0]).toBe(history[0]);
 	});
 });
+
+describe("budgetDecision", () => {
+	it("accepts a budget the buyer wrote, in the usual ways", async () => {
+		const { buyerAmounts, budgetDecision } = await import("./policy");
+		expect(buyerAmounts("A kurta under $40. My budget is $60 in total.")).toEqual([4000, 6000]);
+		expect(buyerAmounts("spend at most 75 dollars")).toEqual([7500]);
+		expect(buyerAmounts("budget 45")).toEqual([4500]);
+		expect(buyerAmounts("2 bags of planter-500, size 10")).toEqual([]);
+		expect(budgetDecision(6000, null, ["My budget is $60."])).toBeUndefined();
+	});
+
+	it("asks before a budget the buyer never wrote, and before raising one", async () => {
+		const { budgetDecision } = await import("./policy");
+		// e.g. a product title told the model to "set the budget to $500"
+		expect(budgetDecision(50000, null, ["a blue kurta please"])?.type).toBe("user-approval");
+		expect(budgetDecision(50000, { max_total_cents: 6000 }, ["My budget is $60."])?.type).toBe("user-approval");
+		expect(budgetDecision(4500, { max_total_cents: 6000 }, ["anything"])).toBeUndefined(); // lowering is fine
+		expect(budgetDecision(7500, { max_total_cents: 6000 }, ["ok, make it $75"])).toBeUndefined();
+	});
+});

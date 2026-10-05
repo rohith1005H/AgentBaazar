@@ -24,6 +24,9 @@ export type PartActions = {
 	paypalDone: (toolCallId: string, approved: boolean) => void;
 };
 
+/** Links and images come from merchants and other shops: only plain web URLs are rendered. */
+const safeUrl = (u?: string | null) => (u && /^https?:\/\//i.test(u) ? u : undefined);
+
 const failure = (o: unknown): string | undefined =>
 	typeof o === "object" && o !== null && "error" in o ? String((o as { error: unknown }).error) : undefined;
 
@@ -75,8 +78,22 @@ export function ToolEntry({
 	// is "in progress"; cards read `output` only once it exists.
 	const running = part.state !== "output-available";
 
+	// Any call the spending rules hold for the buyer's yes (a fix that costs more, a budget the
+	// buyer did not state) shows the same card.
+	if (part.state === "approval-requested") {
+		if (!live) return <Entry>Left unanswered; the agent will ask again.</Entry>;
+		if (part.approval && !part.approval.isAutomatic)
+			return (
+				<FixApproval
+					reason={part.approval.requestReason}
+					onAnswer={(ok) => actions.approveFix(part.approval!.id, ok)}
+				/>
+			);
+	}
+
 	switch (name) {
 		case "set_budget": {
+			if (part.state === "output-denied") return <Entry tone="issue">Budget not changed.</Entry>;
 			const o = out as { max_total: string; deliver_by?: string } | undefined;
 			return o ? (
 				<Entry>
@@ -117,15 +134,6 @@ export function ToolEntry({
 			);
 		}
 		case "apply_fix": {
-			if (part.state === "approval-requested" && !live)
-				return <Entry>Left unanswered; the agent will ask again.</Entry>;
-			if (part.state === "approval-requested" && part.approval && !part.approval.isAutomatic)
-				return (
-					<FixApproval
-						reason={part.approval.requestReason}
-						onAnswer={(ok) => actions.approveFix(part.approval!.id, ok)}
-					/>
-				);
 			if (part.state === "output-denied")
 				return <Entry tone="issue">Not applied{part.approval?.reason ? `: ${part.approval.reason}` : "."}</Entry>;
 			if (running) return <Entry tone="busy">Applying the store’s fix…</Entry>;
@@ -212,6 +220,15 @@ const Money = ({ children }: { children: React.ReactNode }) => (
 	<span className="font-mono text-[14px] tabular-nums text-ink">{children}</span>
 );
 
+/**
+ * What a variant chip sends as the buyer's message. Product titles are merchant text and the
+ * message carries the buyer's authority, so it is built from a short cleaned label and ids.
+ */
+function pickText(p: ProductView, v: ProductView["variants"][number]): string {
+	const label = v.label.replace(/[^\p{L}\p{N} /,-]/gu, "").slice(0, 30);
+	return `Buy the ${label} one (${v.variant_id.replace(/[^\w-]/g, "").slice(0, 64)}) from ${storeName(p.store_id)}.`;
+}
+
 function Products({
 	results,
 	pick,
@@ -225,9 +242,9 @@ function Products({
 		<ul className="mt-2 grid gap-3 sm:grid-cols-2">
 			{results.map((p) => (
 				<li key={`${p.store_id}/${p.product_id}`} className="flex gap-3 rounded-lg border border-rule bg-white p-3">
-					{p.image_url && (
+					{safeUrl(p.image_url) && (
 						// biome-ignore lint/performance/noImgElement: merchant feed images on arbitrary hosts
-						<img src={p.image_url} alt="" className="h-16 w-16 shrink-0 rounded-md bg-paper object-cover" />
+						<img src={safeUrl(p.image_url)} alt="" className="h-16 w-16 shrink-0 rounded-md bg-paper object-cover" />
 					)}
 					<div className="min-w-0 flex-1">
 						<p className="text-[11px] uppercase tracking-[0.12em] text-ink/50">{p.store_name}</p>
@@ -240,7 +257,7 @@ function Products({
 										key={v.variant_id}
 										type="button"
 										disabled={disabled || !p.agent_checkout}
-										onClick={() => pick(`Buy the ${p.title} in ${v.label} from ${p.store_name}.`)}
+										onClick={() => pick(pickText(p, v))}
 										title={`${v.label}, ${v.price}, ${v.availability.replace("_", " ")}`}
 										className={`rounded-full border px-2 py-0.5 text-[12px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo disabled:cursor-default ${
 											out
@@ -292,6 +309,8 @@ type ApprovalState = { approval_url: string | null; approved: boolean; within_bu
 function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved: boolean) => void }) {
 	const [s, setS] = useState<ApprovalState | null>(null);
 	const [opened, setOpened] = useState(false);
+	const [round, setRound] = useState(0); // "Check again" starts a new round of polling
+	const [idle, setIdle] = useState(false);
 	const done = useRef(false);
 	const finish = (ok: boolean) => {
 		if (done.current) return;
@@ -299,11 +318,13 @@ function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved:
 		onDone(ok);
 	};
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: poll once per cart; finish is guarded by a ref
+	// biome-ignore lint/correctness/useExhaustiveDependencies: poll per cart and round; finish is guarded by a ref
 	useEffect(() => {
 		let stop = false;
 		let timer: ReturnType<typeof setTimeout>;
+		const until = Date.now() + 10 * 60_000; // a buyer who walked away should not be polled forever
 		const tick = async () => {
+			if (Date.now() > until) return setIdle(true);
 			const r = await fetch(`/api/agent/carts/${cartId}`).catch(() => null);
 			if (r?.ok && !stop) {
 				const next = (await r.json()) as ApprovalState;
@@ -317,7 +338,7 @@ function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved:
 			stop = true;
 			clearTimeout(timer);
 		};
-	}, [cartId]);
+	}, [cartId, round]);
 
 	const total = s?.cart.totals?.total;
 	const over = s?.within_budget === false;
@@ -358,7 +379,19 @@ function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved:
 				>
 					Decline
 				</button>
-				{opened && !s?.approved && (
+				{idle && (
+					<button
+						type="button"
+						onClick={() => {
+							setIdle(false);
+							setRound((r) => r + 1);
+						}}
+						className="text-sm font-medium text-indigo underline-offset-2 hover:underline"
+					>
+						I approved, check again
+					</button>
+				)}
+				{opened && !idle && !s?.approved && (
 					<span className="text-[13px] text-ink/50" aria-live="polite">
 						Waiting for your approval in PayPal…
 					</span>
@@ -379,9 +412,9 @@ function OrderPlaced({ cart }: { cart: CartView }) {
 				Order <span className="font-mono text-[14px]">{cart.order!.order_id}</span> at {storeName(cart.store_id)}.
 				PayPal authorized <Money>{cart.totals?.total}</Money>; you are charged when it ships.
 			</p>
-			{cart.order!.order_page && (
+			{safeUrl(cart.order!.order_page) && (
 				<a
-					href={cart.order!.order_page}
+					href={safeUrl(cart.order!.order_page)}
 					target="_blank"
 					rel="noreferrer"
 					className="mt-2 inline-block text-sm font-medium text-indigo underline-offset-2 hover:underline"
@@ -407,14 +440,19 @@ function ElsewhereOnTheWeb({ results }: { results: WebProductView[] }) {
 				{results.map((r) => (
 					<li key={r.url} className="w-44 shrink-0">
 						<a
-							href={r.url}
+							href={safeUrl(r.url)}
 							target="_blank"
 							rel="noopener noreferrer nofollow"
 							className="block rounded-lg border border-rule bg-white p-2 hover:border-ink/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo"
 						>
-							{r.image_url && (
+							{safeUrl(r.image_url) && (
 								// biome-ignore lint/performance/noImgElement: third-party product images
-								<img src={r.image_url} alt="" loading="lazy" className="h-24 w-full rounded bg-paper object-contain" />
+								<img
+									src={safeUrl(r.image_url)}
+									alt=""
+									loading="lazy"
+									className="h-24 w-full rounded bg-paper object-contain"
+								/>
 							)}
 							<p className="mt-1.5 line-clamp-2 text-[13px] leading-snug text-ink">{r.title}</p>
 							<p className="mt-0.5 text-[12px] text-ink/55">
