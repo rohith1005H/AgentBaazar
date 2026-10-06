@@ -162,12 +162,20 @@ export function ToolEntry({
 				offer: { code: string; description: string } | null;
 				reason?: string;
 				already_applied?: boolean;
+				terms?: string[];
 			};
 			if (o.offer && o.already_applied)
 				return (
 					<Entry>
 						The store's best offer is already on the cart (
-						<span className="font-mono text-[13px] text-ink">{o.offer.code}</span>).
+						<span className="font-mono text-[13px] text-ink">{o.offer.code}</span>). Its rules:
+						{o.terms && (
+							<ul className="mt-0.5 list-disc pl-5 text-[14px] text-ink/65">
+								{o.terms.map((t) => (
+									<li key={t}>{t}</li>
+								))}
+							</ul>
+						)}
 					</Entry>
 				);
 			return o.offer ? (
