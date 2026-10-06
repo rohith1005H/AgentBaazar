@@ -1,3 +1,5 @@
+import { demoConsoleOpen } from "@/src/console/auth";
+
 export const metadata = { title: "Sign in · AgentBaazar console", robots: { index: false } };
 
 const ERRORS: Record<string, string> = {
@@ -9,7 +11,26 @@ export default async function ConsoleLogin(props: PageProps<"/console/login">) {
 	const { error } = await props.searchParams;
 	const message = typeof error === "string" ? ERRORS[error] : undefined;
 	return (
-		<main className="flex min-h-dvh items-center justify-center bg-paper px-5 text-ink">
+		<main className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-paper px-5 text-ink">
+			{demoConsoleOpen() && (
+				<form
+					method="post"
+					action="/api/console/login"
+					className="w-full max-w-sm rounded-lg border border-rule bg-white p-6"
+				>
+					<input type="hidden" name="demo" value="1" />
+					<p className="font-display text-[22px]">AgentBaazar demo</p>
+					<p className="mt-1 text-[15px] text-ink/70">
+						The merchant console for the demo stores, shared by everyone trying it. PayPal sandbox: test money only.
+					</p>
+					<button
+						type="submit"
+						className="mt-5 h-11 w-full rounded-md bg-ink text-[15px] font-medium text-white hover:bg-indigo"
+					>
+						Open the demo console
+					</button>
+				</form>
+			)}
 			<form
 				method="post"
 				action="/api/console/login"
@@ -29,16 +50,6 @@ export default async function ConsoleLogin(props: PageProps<"/console/login">) {
 					className="mt-1.5 h-11 w-full rounded-md border border-rule px-3 text-[16px] focus:border-indigo focus:outline-none"
 				/>
 				{message && <p className="mt-2 text-[14px] text-madder">{message}</p>}
-				<p className="mt-3 text-[13px] text-ink/60">
-					Judging or trying the demo? The password is in the{" "}
-					<a
-						href="https://github.com/rohith1005H/AgentBaazar#try-it-yourself"
-						className="font-medium text-indigo underline-offset-2 hover:underline"
-					>
-						project README
-					</a>
-					.
-				</p>
 				<button
 					type="submit"
 					className="mt-5 h-11 w-full rounded-md bg-ink text-[15px] font-medium text-white hover:bg-indigo"

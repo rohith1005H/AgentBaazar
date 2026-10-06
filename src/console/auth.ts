@@ -29,8 +29,14 @@ export async function requireConsole(): Promise<void> {
 }
 
 /**
- * Ship, cancel and refund: signed in, and bounded per visitor and overall. The console password is
- * published for judging, so anyone may be signed in; it is all PayPal sandbox money.
+ * The hosted demo lets anyone in with one click (CONSOLE_DEMO_OPEN=true): judges must be able to test
+ * without restriction, and it is all PayPal sandbox money. A real merchant install keeps the password.
+ */
+export const demoConsoleOpen = () => process.env.CONSOLE_DEMO_OPEN === "true";
+
+/**
+ * Ship, cancel and refund: signed in, and bounded per visitor and overall, since on the demo anyone
+ * may be signed in.
  */
 export async function requireConsoleAction(req: Request): Promise<void> {
 	await requireConsole();

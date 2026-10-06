@@ -1,5 +1,5 @@
 /** POST from the console sign-in form. */
-import { passwordMatches, startConsoleSession } from "@/src/console/auth";
+import { demoConsoleOpen, passwordMatches, startConsoleSession } from "@/src/console/auth";
 import { clientIp, HttpError, rateLimit } from "@/src/merchant/api/http";
 
 // Relative Location: behind Render's proxy req.url carries the internal host (localhost:10000).
@@ -14,6 +14,10 @@ export async function POST(req: Request) {
 		throw e;
 	}
 	const form = await req.formData().catch(() => null);
+	if (form?.get("demo") === "1" && demoConsoleOpen()) {
+		await startConsoleSession();
+		return seeOther("/console");
+	}
 	if (!form || !passwordMatches(String(form.get("password") ?? ""))) return seeOther("/console/login?error=password");
 	await startConsoleSession();
 	return seeOther("/console");

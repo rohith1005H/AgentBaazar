@@ -27,10 +27,6 @@ export const GET = route<{ cartId: string }>(async ({ params }) => {
 			approval_url: cart.payment_method?.approval_url ?? null,
 			approved: Boolean(cart.payment_method?.payer_id),
 			within_budget: max === undefined || view.total_cents === undefined ? null : view.total_cents <= max,
-			// A PayPal sandbox test buyer, published for judges (see the README); test money only.
-			...(process.env.DEMO_BUYER_EMAIL && {
-				sandbox_login: { email: process.env.DEMO_BUYER_EMAIL, password: process.env.DEMO_BUYER_PASSWORD ?? "" },
-			}),
 		},
 	};
 });

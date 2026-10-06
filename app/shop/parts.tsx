@@ -327,7 +327,6 @@ type ApprovalState = {
 	approved: boolean;
 	within_budget: boolean | null;
 	cart: CartView;
-	sandbox_login?: { email: string; password: string };
 };
 
 /** Opens PayPal's approval page and waits until the store sees the buyer's approval. */
@@ -422,17 +421,18 @@ function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved:
 					</span>
 				)}
 			</div>
-			{s?.sandbox_login ? (
-				<p className="mt-3 text-[13px] leading-5 text-ink/60">
-					PayPal sandbox, test money only. Log in to PayPal as{" "}
-					<span className="select-all font-mono text-[12px] text-ink">{s.sandbox_login.email}</span> with password{" "}
-					<span className="select-all font-mono text-[12px] text-ink">{s.sandbox_login.password}</span>.
-				</p>
-			) : (
-				<p className="mt-3 text-[12px] text-ink/45">
-					PayPal sandbox: use the sandbox buyer account. No real money moves.
-				</p>
-			)}
+			<p className="mt-3 text-[13px] leading-5 text-ink/60">
+				PayPal sandbox, test money only. Log in with a PayPal sandbox personal account; you can make one in a minute at{" "}
+				<a
+					href="https://developer.paypal.com/dashboard/accounts"
+					target="_blank"
+					rel="noreferrer"
+					className="font-medium text-indigo underline-offset-2 hover:underline"
+				>
+					developer.paypal.com
+				</a>{" "}
+				(Testing Tools, Sandbox Accounts).
+			</p>
 		</div>
 	);
 }
