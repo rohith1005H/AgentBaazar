@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listOrders, setAnalystData, summarize, widgetFor } from "./analyst";
+import { listOrders, proposeAction, setAnalystData, summarize, widgetFor } from "./analyst";
 import type { ConsoleData } from "./console-data";
 
 describe("console analyst tools", () => {
@@ -57,5 +57,33 @@ describe("console analyst tools", () => {
 		expect(listOrders("captured")).toBe("AB-3 | Patel Textiles | CAPTURED | $44.99 | placed 2026-10-05T13:52:00Z");
 		expect(listOrders("REFUNDED")).toBe("No REFUNDED orders.");
 		expect(listOrders(undefined, 1).split("\n")).toHaveLength(1);
+	});
+
+	it("only prepares money actions: the merchant's button carries them out, once", () => {
+		setAnalystData({
+			orders: [
+				{ id: "AB-1016", store_id: "patel-textiles", store: "Patel Textiles", status: "CAPTURED", total: 44.99 },
+				{ id: "AB-1014", store_id: "patel-textiles", store: "Patel Textiles", status: "AUTHORIZED", total: 33.12 },
+			],
+			carts: [],
+			cart_stages: [],
+			cart_issues: [],
+		} as unknown as ConsoleData);
+		const refund = proposeAction("ab-1016", "refund", { amount: "5", reason: "late delivery" });
+		expect(refund).toMatchObject({
+			action: "refund",
+			store_id: "patel-textiles",
+			order_id: "AB-1016",
+			question: "Refund $5.00 on AB-1016 through PayPal?",
+			button: "Refund $5.00",
+			body: { amount: { currency_code: "USD", value: "5.00" }, reason: "late delivery" },
+		});
+		// one request id per proposal, so a second click (or a reload) cannot refund twice
+		expect(refund.body.request_id).toMatch(/^[0-9a-f-]{36}$/);
+		expect(proposeAction("AB-1014", "ship").button).toBe("Ship and capture $33.12");
+		expect(() => proposeAction("AB-1014", "refund")).toThrow(/AUTHORIZED/);
+		expect(() => proposeAction("AB-1016", "ship")).toThrow(/CAPTURED/);
+		expect(() => proposeAction("AB-1016", "refund", { amount: "five" })).toThrow(/not an amount/);
+		expect(() => proposeAction("AB-9999", "cancel")).toThrow(/No order/);
 	});
 });

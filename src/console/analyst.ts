@@ -6,7 +6,14 @@
  * agent knows our data model up front and adds a fully configured widget in one tool call,
  * so a request is two model calls: decide, then confirm.
  */
-import type { AgAiAgentDefinition, AgAiTool, AgReportState, AgStudioApi, AgWidgetState } from "ag-studio";
+import type {
+	AgAiAgentDefinition,
+	AgAiTool,
+	AgAiToolContext,
+	AgReportState,
+	AgStudioApi,
+	AgWidgetState,
+} from "ag-studio";
 import type { ConsoleData } from "./console-data";
 import { FIELDS } from "./data";
 import type { ConsoleRegistry } from "./registry";
@@ -49,11 +56,11 @@ Use add_widget to build what the merchant asks for, in one call: pick the widget
 - grid: columns
 - cart-funnel: category = cart_stages.stage, value = cart_stages.cart_id with countd
 Use summarize to answer questions about the numbers, then answer in one or two sentences with the figures.
-Acting on orders (the merchant confirms each one in a dialog, so just call the tool):
+Acting on orders: these tools only prepare the action; the merchant confirms it with a button in this chat, and nothing happens until they do.
 - ship_order: an AUTHORIZED order; captures the PayPal payment and posts tracking
 - cancel_order: an AUTHORIZED order that has not shipped; voids the authorization, nothing is charged
 - refund_order: a CAPTURED or PARTIALLY_REFUNDED order; omit amount to refund the rest
-If the merchant declines, say so and do not retry.
+Then say in one sentence what is ready and that they confirm it with the button above. Never say it is done.
 Money is in US dollars. Counting orders or carts: use countd on their id. Reply briefly; never invent numbers.`;
 
 /** Rows the console fetched last, for summarize. */
@@ -185,20 +192,66 @@ function findOrder(orderId: string): OrderRow {
 	return o;
 }
 
+/** An action on an order, prepared by the agent and carried out only by the merchant's click (confirm-action.tsx). */
+export type ActionProposal = {
+	action: "ship" | "cancel" | "refund";
+	store_id: string;
+	order_id: string;
+	/** What the merchant is asked, e.g. "Refund $5.00 on AB-1016 through PayPal?" */
+	question: string;
+	/** The confirm button's words */
+	button: string;
+	/** Request body for /api/console/orders/{store}/{order}/{action} */
+	body: Record<string, unknown>;
+};
+
+const ALLOWED: Record<ActionProposal["action"], string[]> = {
+	ship: ["AUTHORIZED"],
+	cancel: ["AUTHORIZED"],
+	refund: ["CAPTURED", "PARTIALLY_REFUNDED"],
+};
+
 /**
- * Money moves only after the merchant confirms in the browser: the model can propose a
- * capture, void or refund, it cannot click OK.
+ * The model can only propose a capture, void or refund: the proposal becomes buttons in the chat,
+ * and money moves when the merchant presses one. A refund's request_id is fixed here, so pressing
+ * twice (or again after a reload) refunds once.
  */
-async function act(o: OrderRow, action: "ship" | "cancel" | "refund", question: string, body?: unknown) {
-	if (!window.confirm(question)) throw new Error("The merchant declined; nothing was changed.");
-	const res = await fetch(`/api/console/orders/${o.store_id}/${o.id}/${action}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body ?? {}),
-	});
-	const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-	if (!res.ok) throw new Error(String(json.message ?? `${action} failed (${res.status})`));
-	return json;
+export function proposeAction(
+	orderId: string,
+	action: ActionProposal["action"],
+	opts: { amount?: string; reason?: string } = {},
+): ActionProposal {
+	const o = findOrder(orderId);
+	if (!ALLOWED[action].includes(o.status))
+		throw new Error(`${o.id} is ${o.status}; ${action} needs an order that is ${ALLOWED[action].join(" or ")}`);
+	const base = { action, store_id: o.store_id, order_id: o.id };
+	if (action === "ship")
+		return {
+			...base,
+			question: `Ship ${o.id}? This captures ${usd(o.total)} from the buyer's PayPal and posts tracking.`,
+			button: `Ship and capture ${usd(o.total)}`,
+			body: {},
+		};
+	if (action === "cancel")
+		return {
+			...base,
+			question: `Cancel ${o.id}? The ${usd(o.total)} authorization is voided; the buyer is not charged.`,
+			button: "Cancel the order",
+			body: {},
+		};
+	const { amount, reason } = opts;
+	if (amount && !/^\d+(\.\d{1,2})?$/.test(amount)) throw new Error(`"${amount}" is not an amount like 5.00`);
+	const what = amount ? usd(Number(amount)) : "the rest of the payment";
+	return {
+		...base,
+		question: `Refund ${what} on ${o.id} through PayPal?`,
+		button: amount ? `Refund ${what}` : "Refund the rest",
+		body: {
+			...(amount && { amount: { currency_code: "USD", value: Number(amount).toFixed(2) } }),
+			...(reason && { reason: reason.slice(0, 200) }),
+			request_id: crypto.randomUUID(),
+		},
+	};
 }
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -209,6 +262,18 @@ export function listOrders(status?: string, limit = 10): string {
 		.slice(0, Math.min(Math.max(1, limit), 25));
 	if (!rows.length) return status ? `No ${status.toUpperCase()} orders.` : "No orders yet.";
 	return rows.map((o) => `${o.id} | ${o.store} | ${o.status} | ${usd(o.total)} | placed ${o.created_at}`).join("\n");
+}
+
+function propose(ctx: AgAiToolContext, make: () => ActionProposal) {
+	try {
+		const p = make();
+		return ctx.success(
+			`Ready, waiting for the merchant's button in the chat: ${p.question} Nothing has happened yet.`,
+			p,
+		);
+	} catch (e) {
+		return ctx.error((e as Error).message);
+	}
 }
 
 export function analystAgent(api: AgStudioApi<ConsoleRegistry>, extra: AgAiTool[]): AgAiAgentDefinition {
@@ -264,66 +329,30 @@ export function analystAgent(api: AgStudioApi<ConsoleRegistry>, extra: AgAiTool[
 		}),
 		api.defineAiTool<never, never, { order_id: string }, unknown>({
 			name: "ship_order",
-			description: "Ship an AUTHORIZED order: captures the PayPal payment and posts the tracking number.",
+			description:
+				"Prepare shipping an AUTHORIZED order (captures the PayPal payment, posts tracking) for the merchant to confirm.",
 			params: (s) => s.object({ order_id: s.string({ description: "Order number, e.g. AB-1006" }) }) as never,
-			execute: async ({ order_id }, ctx) => {
-				try {
-					const o = findOrder(order_id);
-					const r = await act(o, "ship", `Ship ${o.id}? This captures ${usd(o.total)} from the buyer's PayPal.`);
-					return ctx.success(
-						`Shipped ${o.id}: captured, PayPal capture ${r.capture_id}, tracking posted: ${r.tracking_posted}.`,
-					);
-				} catch (e) {
-					return ctx.error((e as Error).message);
-				}
-			},
+			execute: ({ order_id }, ctx) => propose(ctx, () => proposeAction(order_id, "ship")),
 		}),
 		api.defineAiTool<never, never, { order_id: string }, unknown>({
 			name: "cancel_order",
 			description:
-				"Cancel an AUTHORIZED order that has not shipped: voids the PayPal authorization and returns the stock.",
+				"Prepare cancelling an AUTHORIZED order that has not shipped (voids the authorization) for the merchant to confirm.",
 			params: (s) => s.object({ order_id: s.string({ description: "Order number, e.g. AB-1006" }) }) as never,
-			execute: async ({ order_id }, ctx) => {
-				try {
-					const o = findOrder(order_id);
-					await act(
-						o,
-						"cancel",
-						`Cancel ${o.id}? The ${usd(o.total)} authorization is voided; the buyer is not charged.`,
-					);
-					return ctx.success(`Cancelled ${o.id}: authorization voided.`);
-				} catch (e) {
-					return ctx.error((e as Error).message);
-				}
-			},
+			execute: ({ order_id }, ctx) => propose(ctx, () => proposeAction(order_id, "cancel")),
 		}),
 		api.defineAiTool<never, never, { order_id: string; amount?: string; reason?: string }, unknown>({
 			name: "refund_order",
-			description: "Refund a captured order through PayPal, in full or in part.",
+			description:
+				"Prepare a refund of a captured order through PayPal, in full or in part, for the merchant to confirm.",
 			params: (s) =>
 				s.object({
 					order_id: s.string({ description: "Order number, e.g. AB-1006" }),
 					amount: s.string({ description: 'US dollars, e.g. "5.00"; omit to refund the rest' }).optional(),
 					reason: s.string({ description: "Short reason shown to the buyer" }).optional(),
 				}) as never,
-			execute: async ({ order_id, amount, reason }, ctx) => {
-				try {
-					const o = findOrder(order_id);
-					if (amount && !/^\d+(\.\d{1,2})?$/.test(amount)) throw new Error(`"${amount}" is not an amount like 5.00`);
-					const what = amount ? `$${Number(amount).toFixed(2)}` : "the rest of the payment";
-					const r = await act(o, "refund", `Refund ${what} on ${o.id} through PayPal?`, {
-						...(amount && { amount: { currency_code: "USD", value: Number(amount).toFixed(2) } }),
-						...(reason && { reason: reason.slice(0, 200) }),
-						request_id: crypto.randomUUID(), // one confirmed action, one refund
-					});
-					const refunded = (r.refunded as { value?: string } | undefined)?.value;
-					return ctx.success(
-						`Refunded $${refunded} on ${o.id} (PayPal refund ${r.refund_id}); order is now ${r.status}.`,
-					);
-				} catch (e) {
-					return ctx.error((e as Error).message);
-				}
-			},
+			execute: ({ order_id, amount, reason }, ctx) =>
+				propose(ctx, () => proposeAction(order_id, "refund", { amount, reason })),
 		}),
 		...extra,
 	];

@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * The merchant console: AG Studio over live AgentBaazar data, with Studio's own AI agents
- * running on Gemini through our adapter (no key in the browser), a custom cart funnel
- * widget, and a Ship button that captures the PayPal authorization.
+ * The merchant console: AG Studio over live AgentBaazar data, with our analyst agent running on
+ * Gemini through our adapter (no key in the browser), a custom cart funnel widget, a Ship button
+ * that captures the PayPal authorization, and in-chat buttons to confirm what the agent prepares.
  */
 import type {
 	AgAiHarnessSetup,
@@ -18,6 +18,7 @@ import { AgStudio, AgStudioProvider, createWidgets } from "ag-studio-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { analystAgent, setAnalystData } from "./analyst";
 import { cartFunnelDef } from "./cart-funnel";
+import { CONFIRM_DISPLAY, useOpenConfirmations } from "./confirm-action";
 import type { ConsoleData } from "./console-data";
 import { toSources } from "./data";
 import { bumpDataVersion } from "./data-version";
@@ -115,6 +116,7 @@ export default function StudioConsole() {
 	const [initialState] = useState(loadReport); // read once; Studio ignores later changes
 	const [dark, setDark] = useState(false);
 	const [live, setLive] = useState(false);
+	useOpenConfirmations();
 
 	// Refresh on every store event (SSE) and every 30 s. Only row data is re-read.
 	useEffect(() => {
@@ -231,6 +233,7 @@ export default function StudioConsole() {
 						widgets={widgets}
 						theme={consoleTheme}
 						ai={ai}
+						aiToolDisplay={CONFIRM_DISPLAY}
 						mode="edit"
 						onStateUpdated={onStateUpdated}
 					/>
