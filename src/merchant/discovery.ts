@@ -9,7 +9,7 @@ import { ulid } from "ulid";
 import { z } from "zod";
 import type { CartRequest, PayPalCart } from "@/src/cart-spec/schema";
 import { db } from "@/src/db/client";
-import { cartEvents, coupons, orders, products, variants } from "@/src/db/schema";
+import { cartEvents, coupons, type MerchantPolicy, orders, products, variants } from "@/src/db/schema";
 import { type ApiResult, badRequest, notFound, unprocessable } from "./api/http";
 import type { CartCaller } from "./auth/jwt-verify";
 import { toCents, toMoney, usd } from "./cart/money";
@@ -124,9 +124,24 @@ export async function searchCatalog(store: string, params: URLSearchParams): Pro
 const OfferRequest = z.object({ cart_id: z.string(), reason: z.string().max(200).optional() });
 
 /**
+ * The store's offer rules in plain words, sent with every offer answer, so an agent can tell the
+ * buyer honestly what else would help (and what will not) instead of guessing.
+ */
+export function offerTerms(p: MerchantPolicy["coupons"]): string[] {
+	return [
+		...(p.firstOrderPct > 0 ? [`${p.firstOrderPct}% off a first order`] : []),
+		...(p.bundle ? [`${p.bundle.pct}% off ${p.bundle.minItems} or more items`] : []),
+		`One offer per cart, the best that applies, from a ${usd(p.minSubtotalCents)} subtotal`,
+		...(p.freeShippingOverCents !== undefined
+			? [`Free shipping on orders of ${usd(p.freeShippingOverCents)} or more after discounts`]
+			: []),
+	];
+}
+
+/**
  * Bounded negotiation: the merchant's policy, not an LLM, decides what an agent
  * can get. The best single applicable offer is minted as a one-time coupon bound
- * to this cart; asking again returns the same coupon.
+ * to this cart; asking again returns the same coupon. Every answer carries the terms.
  */
 export async function makeOffer(m: repo.Merchant, body: unknown, caller: CartCaller): Promise<ApiResult> {
 	const { cart_id, reason } = OfferRequest.parse(body);
@@ -148,17 +163,25 @@ export async function makeOffer(m: repo.Merchant, body: unknown, caller: CartCal
 			),
 		)
 		.limit(1);
+	const policy = m.policy.coupons;
+	const terms = offerTerms(policy);
 	if (existing)
 		return {
 			status: 200,
-			body: { offer: offerBody(existing.code, existing.description ?? "", existing.value, existing.expiresAt!) },
+			body: {
+				offer: offerBody(existing.code, existing.description ?? "", existing.value, existing.expiresAt!),
+				already_offered: true,
+				terms,
+			},
 		};
 
-	const policy = m.policy.coupons;
 	const cart = row.payload as PayPalCart;
 	const subtotal = toCents(cart.totals?.subtotal?.value ?? "0");
 	if (subtotal < policy.minSubtotalCents)
-		return { status: 200, body: { offer: null, reason: `Offers start at a ${usd(policy.minSubtotalCents)} subtotal` } };
+		return {
+			status: 200,
+			body: { offer: null, reason: `Offers start at a ${usd(policy.minSubtotalCents)} subtotal`, terms },
+		};
 
 	const email = (row.request as CartRequest).customer?.email_address;
 	const firstOrder = email ? !(await hasOrdered(m.id, email)) : false;
@@ -179,7 +202,7 @@ export async function makeOffer(m: repo.Merchant, body: unknown, caller: CartCal
 	].filter((c) => c.pct > 0);
 	if (candidates.length === 0) {
 		const hint = email ? "" : " (a first-order offer needs the buyer's email on the cart)";
-		return { status: 200, body: { offer: null, reason: `No offer applies to this cart${hint}` } };
+		return { status: 200, body: { offer: null, reason: `No offer applies to this cart${hint}`, terms } };
 	}
 
 	const best = candidates.reduce((a, b) => (b.pct > a.pct ? b : a));
@@ -202,7 +225,7 @@ export async function makeOffer(m: repo.Merchant, body: unknown, caller: CartCal
 			.insert(cartEvents)
 			.values({ id: ulid(), cartId: cart_id, kind: "offer", data: { code, pct, reason: reason ?? null } });
 	});
-	return { status: 200, body: { offer: offerBody(code, best.description, pct, expiresAt) } };
+	return { status: 200, body: { offer: offerBody(code, best.description, pct, expiresAt), terms } };
 }
 
 const offerBody = (code: string, description: string, pct: number, expiresAt: Date) => ({

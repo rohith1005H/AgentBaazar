@@ -287,16 +287,23 @@ export function shopperTools(session: Session) {
 
 		get_offer: tool({
 			description:
-				"Ask the store for a discount on this cart (e.g. a first-order coupon). If it offers one, it is applied to the cart.",
+				"Ask the store for a discount on this cart (e.g. a first-order coupon). If it offers one, it is applied to the cart. The answer includes the store's offer terms (e.g. a free-shipping threshold).",
 			inputSchema: z.object({ cart_id: z.string() }),
 			execute: async ({ cart_id }) => {
 				const sc = await sessionCart(session.id, cart_id);
 				const r = await cartClient(await storeRef(sc.storeId), sid).offer(cart_id, "first order");
-				const body = r.body as { offer?: { code: string; description: string } | null; reason?: string };
-				if (!r.ok || !body.offer) return { offer: null, reason: body.reason ?? "No offer available" };
+				const body = r.body as {
+					offer?: { code: string; description: string } | null;
+					reason?: string;
+					already_offered?: boolean;
+					terms?: string[];
+				};
+				if (!r.ok || !body.offer)
+					return { offer: null, reason: body.reason ?? "No offer available", terms: body.terms };
+				if (body.already_offered) return { offer: body.offer, already_applied: true, terms: body.terms };
 				const code = body.offer.code;
 				const cart = await put(cart_id, (c) => applyCoupon(requestFromCart(c), code));
-				return { offer: body.offer, cart };
+				return { offer: body.offer, terms: body.terms, cart };
 			},
 		}),
 

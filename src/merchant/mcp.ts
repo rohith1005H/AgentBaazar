@@ -237,12 +237,16 @@ export function storeMcp(m: repo.Merchant) {
 				},
 				({ cart_id }) =>
 					run(m.id, "request_offer", async () => {
-						const r = body<{ offer: { code: string } | null; reason?: string }>(
+						const r = body<{ offer: { code: string } | null; reason?: string; terms?: string[] }>(
 							await makeOffer(await merchant(), { cart_id, reason: "first order" }, caller),
 						);
-						if (!r.offer) return { offer: null, reason: r.reason ?? "No offer available" };
+						if (!r.offer) return { offer: null, reason: r.reason ?? "No offer available", terms: r.terms };
 						const code = r.offer.code;
-						return { offer: r.offer, cart: await put(cart_id, (c) => applyCoupon(requestFromCart(c), code)) };
+						return {
+							offer: r.offer,
+							terms: r.terms,
+							cart: await put(cart_id, (c) => applyCoupon(requestFromCart(c), code)),
+						};
 					}),
 			);
 

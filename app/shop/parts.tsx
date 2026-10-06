@@ -158,7 +158,18 @@ export function ToolEntry({
 		}
 		case "get_offer": {
 			if (running) return <Entry tone="busy">Asking the store for a discount…</Entry>;
-			const o = out as { offer: { code: string; description: string } | null; reason?: string };
+			const o = out as {
+				offer: { code: string; description: string } | null;
+				reason?: string;
+				already_applied?: boolean;
+			};
+			if (o.offer && o.already_applied)
+				return (
+					<Entry>
+						The store's best offer is already on the cart (
+						<span className="font-mono text-[13px] text-ink">{o.offer.code}</span>).
+					</Entry>
+				);
 			return o.offer ? (
 				<Entry tone="good">
 					The store offered <span className="font-mono text-[13px] text-ink">{o.offer.code}</span>:{" "}
