@@ -6,7 +6,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { signLink, verifyLink } from "@/src/crypto";
-import { HttpError } from "@/src/merchant/api/http";
+import { clientIp, HttpError, rateLimit } from "@/src/merchant/api/http";
 
 const COOKIE = "ab_console";
 const WEEK_S = 7 * 24 * 3600;
@@ -26,6 +26,16 @@ export async function consoleAuthorized(): Promise<boolean> {
 export async function requireConsole(): Promise<void> {
 	if (!(await consoleAuthorized()))
 		throw new HttpError(401, { name: "UNAUTHORIZED", message: "Sign in to the console" });
+}
+
+/**
+ * Ship, cancel and refund: signed in, and bounded per visitor and overall. The console password is
+ * published for judging, so anyone may be signed in; it is all PayPal sandbox money.
+ */
+export async function requireConsoleAction(req: Request): Promise<void> {
+	await requireConsole();
+	rateLimit("console-act:all", { capacity: 120, refillPerSec: 1 });
+	rateLimit(`console-act:ip:${clientIp(req)}`, { capacity: 20, refillPerSec: 1 / 6 });
 }
 
 export function passwordMatches(given: string): boolean {

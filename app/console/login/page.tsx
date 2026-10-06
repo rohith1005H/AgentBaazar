@@ -29,6 +29,16 @@ export default async function ConsoleLogin(props: PageProps<"/console/login">) {
 					className="mt-1.5 h-11 w-full rounded-md border border-rule px-3 text-[16px] focus:border-indigo focus:outline-none"
 				/>
 				{message && <p className="mt-2 text-[14px] text-madder">{message}</p>}
+				<p className="mt-3 text-[13px] text-ink/60">
+					Judging or trying the demo? The password is in the{" "}
+					<a
+						href="https://github.com/rohith1005H/AgentBaazar#try-it-yourself"
+						className="font-medium text-indigo underline-offset-2 hover:underline"
+					>
+						project README
+					</a>
+					.
+				</p>
 				<button
 					type="submit"
 					className="mt-5 h-11 w-full rounded-md bg-ink text-[15px] font-medium text-white hover:bg-indigo"

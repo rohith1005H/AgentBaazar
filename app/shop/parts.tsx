@@ -322,7 +322,13 @@ function FixApproval({ reason, onAnswer }: { reason?: string; onAnswer: (ok: boo
 	);
 }
 
-type ApprovalState = { approval_url: string | null; approved: boolean; within_budget: boolean | null; cart: CartView };
+type ApprovalState = {
+	approval_url: string | null;
+	approved: boolean;
+	within_budget: boolean | null;
+	cart: CartView;
+	sandbox_login?: { email: string; password: string };
+};
 
 /** Opens PayPal's approval page and waits until the store sees the buyer's approval. */
 function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved: boolean) => void }) {
@@ -416,9 +422,17 @@ function PayPalApproval({ cartId, onDone }: { cartId: string; onDone: (approved:
 					</span>
 				)}
 			</div>
-			<p className="mt-3 text-[12px] text-ink/45">
-				PayPal sandbox: use the sandbox buyer account. No real money moves.
-			</p>
+			{s?.sandbox_login ? (
+				<p className="mt-3 text-[13px] leading-5 text-ink/60">
+					PayPal sandbox, test money only. Log in to PayPal as{" "}
+					<span className="select-all font-mono text-[12px] text-ink">{s.sandbox_login.email}</span> with password{" "}
+					<span className="select-all font-mono text-[12px] text-ink">{s.sandbox_login.password}</span>.
+				</p>
+			) : (
+				<p className="mt-3 text-[12px] text-ink/45">
+					PayPal sandbox: use the sandbox buyer account. No real money moves.
+				</p>
+			)}
 		</div>
 	);
 }

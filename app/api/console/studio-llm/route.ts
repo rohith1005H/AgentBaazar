@@ -5,6 +5,7 @@ import type { StudioLlmFrame } from "@/src/console/llm-adapter";
 import { clean, type Json, type SignedCall, toModelMessages, toToolChoice } from "@/src/console/studio-bridge";
 import { llm } from "@/src/llm";
 import { log } from "@/src/log";
+import { clientIp, HttpError, rateLimit } from "@/src/merchant/api/http";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,15 @@ const MAX_BODY = 300_000;
 
 export async function POST(req: Request): Promise<Response> {
 	if (!(await consoleAuthorized())) return new Response("Sign in to the console", { status: 401 });
+	// The console password is published for judging: bound the shared free AI quota (a request is ~2 calls).
+	try {
+		rateLimit("console-ai:all", { capacity: 40, refillPerSec: 1 / 3 });
+		rateLimit(`console-ai:ip:${clientIp(req)}`, { capacity: 20, refillPerSec: 1 / 8 });
+	} catch (e) {
+		if (e instanceof HttpError)
+			return new Response("The assistant is busy; try again in a minute", { status: 429, headers: e.headers });
+		throw e;
+	}
 	const raw = await req.text();
 	if (raw.length > MAX_BODY) return new Response("Request too large", { status: 413 });
 	let body: AgLlmRequest;

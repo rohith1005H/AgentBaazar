@@ -6,7 +6,20 @@ AI shopping agents are about to buy things for people. PayPal's agentic commerce
 
 AgentBaazar is that missing merchant side, open source. Give it a product feed, and the store gets a spec-conformant Cart API that agents can shop and pay through PayPal, plus buyer protection that a human checkout never needed: **the buyer is only charged when the merchant ships.**
 
-> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). **Try it: the shopping agent at https://agentbaazar.onrender.com/shop and the merchant console at https://agentbaazar.onrender.com/console** (password in the submission's testing notes). The merchant side, the buyer agent and the console all work end to end, deployed, against the PayPal sandbox.
+> Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/). **Live demo: https://agentbaazar.onrender.com** (PayPal sandbox). **Try it: the shopping agent at https://agentbaazar.onrender.com/shop and the merchant console at https://agentbaazar.onrender.com/console** (logins under [Try it yourself](#try-it-yourself)). The merchant side, the buyer agent and the console all work end to end, deployed, against the PayPal sandbox.
+
+## Try it yourself
+
+Everything runs on the PayPal sandbox, so only test money moves. These logins are public on purpose, for judges and anyone trying the demo.
+
+| What | Where | Login |
+|---|---|---|
+| Shopping agent | https://agentbaazar.onrender.com/shop | none |
+| PayPal sandbox buyer, to approve payments | the PayPal window the agent opens | `sb-ifm0153185140@personal.example.com              # Testing Tools -> Sandbox Accounts -> Personal (US)` / `km;?Nh8O` |
+| Merchant console | https://agentbaazar.onrender.com/console | password `baazar-d44275d8` |
+| Any MCP client | `https://agentbaazar.onrender.com/api/stores/patel-textiles/mcp` | none |
+
+The console is shared by everyone testing it. The free hosting sleeps when idle, so the first visit can take up to a minute.
 
 ---
 
