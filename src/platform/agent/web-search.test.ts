@@ -43,4 +43,10 @@ describe("retryAfterMs (LLM cooldown)", () => {
 		expect(retryAfterMs("Please retry in 1.2s")).toBe(5_000);
 		expect(retryAfterMs("model overloaded")).toBe(60_000);
 	});
+	it("falls back when a provider rejects the key, not only on quota", async () => {
+		const { busy } = await import("@/src/llm");
+		expect(busy({ statusCode: 401, message: "API key not valid" })).toBe(true);
+		expect(busy({ statusCode: 403 })).toBe(true);
+		expect(busy({ statusCode: 400, message: "Invalid argument" })).toBe(false);
+	});
 });

@@ -17,7 +17,8 @@ export type LlmRole = "buyer" | "console";
 
 // Free-tier quotas are per model, so each role is a chain across models (measured 2026-10-05:
 // tool-calling step latency; gemini-3.8-flash allows only 20 requests a day, 3.7-flash hung).
-// The console chain has no Groq: its free 8k tokens/minute cannot hold one Studio turn.
+// Groq is last in the console chain: its free 8k tokens/minute holds about one lean console
+// turn a minute, which beats an error when every Google model refuses.
 const CHAINS: Record<LlmRole, string[]> = {
 	buyer: [
 		process.env.LLM_BUYER_MODEL || "gemini-3.5-flash-lite", // ~1 s per step
@@ -33,6 +34,7 @@ const CHAINS: Record<LlmRole, string[]> = {
 		"gemini-3.6-flash",
 		"gemini-3.1-flash-lite",
 		"gemini-3.5-flash-lite",
+		"groq:openai/gpt-oss-120b",
 	],
 };
 
@@ -41,10 +43,14 @@ function model(id: string) {
 	return createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY })(id);
 }
 
-/** Overloaded, rate limited or out of quota: worth trying another model. */
-function busy(e: unknown): boolean {
+/**
+ * Overloaded, rate limited, out of quota, or the provider rejects our key (a revoked or
+ * expired key takes out every model of that provider, not just one): try another model.
+ */
+export function busy(e: unknown): boolean {
 	const status = (e as { statusCode?: number }).statusCode;
-	if (status === 429 || status === 500 || status === 503 || status === 529) return true;
+	if (status === 401 || status === 403 || status === 429 || status === 500 || status === 503 || status === 529)
+		return true;
 	return /high demand|overloaded|quota|exhausted|unavailable|rate limit/i.test(String((e as Error)?.message ?? e));
 }
 
